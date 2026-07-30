@@ -31,6 +31,9 @@ M.visible = {}       -- "x,y" -> true (default: everything visible unless set)
 M.visibleDefault = true
 M.combatResults = {} -- "attackerId:defenderId" -> result table
 M.disallowOps = {}   -- "unitId:opType" -> true  (CanStartOperation returns false)
+M.playerReligion = {}-- playerId -> religion type (number/string) our player founded
+M.revealed = {}      -- "x,y" -> true (default: everything revealed unless set)
+M.revealedDefault = true
 M.unitInfo = {}      -- unitType string -> { FormationClass=, PromotionClass= }
 M.reachablePlots = {}-- unitId -> { plotIndex, ... }
 M.plots = {}         -- plotIndex -> {x=, y=}
@@ -40,6 +43,8 @@ M.plots = {}         -- plotIndex -> {x=, y=}
 -- ---------------------------------------------------------------------------
 UnitOperationTypes = {
     FORTIFY = "FORTIFY", MOVE_TO = "MOVE_TO", RANGE_ATTACK = "RANGE_ATTACK",
+    AIR_ATTACK = "AIR_ATTACK", DEPLOY = "DEPLOY", SPREAD_RELIGION = "SPREAD_RELIGION",
+    SLEEP = "SLEEP", SKIP_TURN = "SKIP_TURN",
     PARAM_X = "PARAM_X", PARAM_Y = "PARAM_Y", PARAM_MODIFIERS = "PARAM_MODIFIERS",
 }
 UnitOperationMoveModifiers = { NONE = 0, ATTACK = 1, MOVE_IGNORE_UNEXPLORED_DESTINATION = 2 }
@@ -53,20 +58,32 @@ CombatResultParameters = {
 -- ---------------------------------------------------------------------------
 --  Mock unit factory
 -- ---------------------------------------------------------------------------
--- spec: { id, x, y, combat, ranged, range, religious, damage, unitType,
---         moves, attacks, dead }
+-- spec: { id, x, y, combat, ranged, bombard, range, religious, damage,
+--         unitType, domain, formationClass, promotionClass, moves, attacks, dead }
 function M.makeUnit(spec)
     local u = {}
     local s = spec
     u._spec = s
+    -- Register this unit type's GameInfo row (domain / classes) so the logic's
+    -- GameInfo.Units[type] lookups see the intended values.
+    local ut = s.unitType or "UNIT_WARRIOR"
+    s.unitType = ut
+    M.unitInfo[ut] = {
+        UnitType = ut,
+        Domain = s.domain or "DOMAIN_LAND",
+        FormationClass = s.formationClass or "FORMATION_CLASS_LAND_COMBAT",
+        PromotionClass = s.promotionClass or "PROMOTION_CLASS_MELEE",
+    }
     function u:GetID() return s.id end
     function u:GetComponentID() return { player = s.owner or 0, id = s.id } end
     function u:GetX() return s.x end
     function u:GetY() return s.y end
     function u:GetCombat() return s.combat or 0 end
     function u:GetRangedCombat() return s.ranged or 0 end
+    function u:GetBombardCombat() return s.bombard or 0 end
     function u:GetRange() return s.range or 0 end
     function u:GetReligiousStrength() return s.religious or 0 end
+    function u:GetSpreadCharges() return s.spreadCharges == nil and 0 or s.spreadCharges end
     function u:GetDamage() return s.damage or 0 end
     function u:GetMovesRemaining() return s.moves == nil and 2 or s.moves end
     function u:GetAttacksRemaining() return s.attacks == nil and 1 or s.attacks end
@@ -119,11 +136,20 @@ function M.makePlayer(spec)
         function city:GetY() return cs.y end
         function city:GetComponentID() return { player = spec.id, id = cs.id } end
         function city:GetDefenseStrength() return cs.defense or 30 end
+        -- Religion: cs.religion is this city's majority religion (or nil).
+        function city:GetReligion()
+            return { GetMajorityReligion = function() return cs.religion end }
+        end
         table.insert(cities, city)
     end
     function p:GetID() return spec.id end
     function p:GetUnits() return makeUnitCollection(units) end
     function p:GetCities() return makeCityCollection(cities) end
+    function p:GetReligion()
+        return {
+            GetReligionTypeCreated = function() return M.playerReligion[spec.id] end,
+        }
+    end
     function p:GetDiplomacy()
         return {
             IsAtWarWith = function(_, otherId)
@@ -152,6 +178,9 @@ function M.install()
         end,
     }
 
+    -- Synthetic plot index <-> (x,y). Deterministic and reversible for tests.
+    local function plotIndex(x, y) return x * 1000 + y end
+
     Map = {
         GetPlotDistance = function(x1, y1, x2, y2)
             -- Hex-ish distance is fine to approximate with Chebyshev for tests.
@@ -162,14 +191,28 @@ function M.install()
             if p == nil then return nil end
             return { GetX = function() return p.x end, GetY = function() return p.y end }
         end,
+        GetPlot = function(x, y)
+            return { GetIndex = function() return plotIndex(x, y) end,
+                     GetX = function() return x end, GetY = function() return y end }
+        end,
     }
 
     PlayersVisibility = setmetatable({}, { __index = function()
-        return { IsVisible = function(_, x, y)
-            local key = x .. "," .. y
-            if M.visible[key] ~= nil then return M.visible[key] end
-            return M.visibleDefault
-        end }
+        return {
+            IsVisible = function(_, x, y)
+                local key = x .. "," .. y
+                if M.visible[key] ~= nil then return M.visible[key] end
+                return M.visibleDefault
+            end,
+            IsRevealed = function(_, idx)
+                -- idx is a synthetic plotIndex; decode to x,y.
+                local x = math.floor(idx / 1000)
+                local y = idx - x * 1000
+                local key = x .. "," .. y
+                if M.revealed[key] ~= nil then return M.revealed[key] end
+                return M.revealedDefault
+            end,
+        }
     end })
 
     GameInfo = { Units = setmetatable({}, { __index = function(_, ut)
@@ -185,9 +228,16 @@ function M.install()
 
     UnitManager = {
         -- Returns true unless a scenario disallows this (unitId, op) pair.
+        -- Also models the real rule that FORTIFY is military-only: a unit with no
+        -- combat/ranged strength (religious/civilian) cannot fortify.
         CanStartOperation = function(unit, op, _, _)
             local key = unit:GetID() .. ":" .. op
             if M.disallowOps[key] then return false end
+            if op == UnitOperationTypes.FORTIFY then
+                local s = unit._spec or {}
+                local isCombat = (s.combat or 0) > 0 or (s.ranged or 0) > 0
+                if not isCombat then return false end  -- civilian/religious can't fortify
+            end
             return true
         end,
         RequestOperation = function(unit, op, params)
@@ -247,6 +297,9 @@ function M.reset()
     M.visibleDefault = true
     M.combatResults = {}
     M.disallowOps = {}
+    M.playerReligion = {}
+    M.revealed = {}
+    M.revealedDefault = true
     M.unitInfo = {}
     M.reachablePlots = {}
     M.plots = {}

@@ -12,6 +12,10 @@ reposition automatically, with three behavior modes.
 | **Move** | Advance to minimize distance to closest enemy | Only units > 50% HP advance | Never advance toward enemies |
 | **Ranged** | Attack in range; else move+attack; else advance | If move+attack possible, move to **max range** then fire | Fire only (no advance) |
 
+The "hold" action is unit-appropriate: military units **Fortify** (defensive bonus
++ heal), but religious/civilian units can't fortify, so they **Sleep** (heal in
+place) or **Skip Turn** instead.
+
 **Target priority (all modes):** among **all currently-visible** enemies (any
 enemy on a tile your civ can see — no distance limit; fogged enemies are
 ignored), kill a target if possible; otherwise hit the target you deal the most
@@ -19,10 +23,53 @@ damage to. **Distance breaks ties** — a closer enemy is preferred when two
 targets are otherwise equal. Priority order: **kill > damage > distance**.
 
 **Execution order within a pass:** melee/cavalry/religious → ranged (archers,
-crossbows) → siege (catapult, trebuchet, bombard) → support (medics, rams,
-towers). Melee open the fight and take tiles, ranged fire into softened targets,
-siege bombard (especially cities), support reposition last. Ties within a bucket
-are ordered by unit ID for determinism.
+crossbows) + air → siege (catapult, trebuchet, bombard) → support (medics, rams,
+towers). Melee open the fight and take tiles, ranged/air fire into softened
+targets, siege bombard (especially cities), support reposition last. Ties within
+a bucket are ordered by unit ID for determinism.
+
+**Which units the mod controls:** any unit with combat, ranged, or religious
+strength — **except recon units** (Scout/Skirmisher/Ranger), which are excluded
+so a weak Scout isn't thrown into a losing fight (leave them on your own explore
+orders). Civilians (Builder, Settler, Trader, Great People, Spy, etc.) have zero
+combat strength and are naturally skipped. Unknown/modded combat units are
+included by default.
+
+**Domains supported:**
+
+- **Land** — melee, ranged, siege, cavalry, religious, support. Full support.
+- **Sea** — melee ships (`MOVE_TO`+attack) and ranged/bombard ships
+  (`RANGE_ATTACK`). Bombard-strength ships are correctly treated as ranged.
+  (Coastal-raid auto-pillage is not automated.)
+- **Air** — fighters/bombers strike in range via `AIR_ATTACK` and otherwise hold.
+  They never auto-advance or rebase (`DEPLOY` is a strategic choice left to you),
+  so an air unit only attacks a target already within its operational range.
+
+**Religious units:**
+
+- **Missionaries / Gurus** (spread-only, no combat) get dedicated behavior in all
+  modes: move to the nearest **unconverted** city — **our own cities first**, then
+  foreign/neutral — and **Spread Religion** when adjacent. If no unconverted city
+  is visible, they **explore** toward the nearest unrevealed tile (fog edge).
+  "Unconverted" = the city's majority religion isn't the one we founded.
+
+- **Apostles** can **both attack** (religious combat vs. enemy religious units)
+  **and spread** religion. Which they prioritize depends on the mode:
+
+  | Mode | Apostle priority |
+  |------|------------------|
+  | Aggressive | **Attack** if an enemy religious unit is visible; else spread |
+  | Passive | **Spread** always; attack only if nothing to spread |
+  | In-Between | Whichever target (attack or spread) is **closer** |
+
+  **Last-charge rule (all modes):** an Apostle on its **final spread charge**
+  never spreads — it prioritizes **attack** instead (using aggressive combat
+  rules so the forced attack isn't cancelled), and if there's no enemy to attack
+  it **explores** to save the charge for you to spend manually. Apostle attacks
+  otherwise use the same suicide/HP safety gates as military units.
+
+- **Inquisitors** carry a combat promotion class and fight via the normal combat
+  pipeline (they don't get the spread-priority behavior).
 
 ## Install (macOS)
 

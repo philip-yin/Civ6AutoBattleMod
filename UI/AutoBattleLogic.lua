@@ -94,7 +94,22 @@ end
 --  Unit classification
 -- ---------------------------------------------------------------------------
 
+-- Recon units (Scout, Skirmisher, Ranger) carry PROMOTION_CLASS_RECON. They HAVE
+-- combat strength (Scout=10) so a naive "has combat" filter would treat them as
+-- fighters and throw them into losing battles. We exclude them from auto-battle
+-- so they keep whatever orders you gave them (e.g. auto-explore).
+local function IsRecon(pUnit)
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    if not ok or ut == nil then return false end
+    local info = GameInfo.Units[ut]
+    return info ~= nil and info.PromotionClass == "PROMOTION_CLASS_RECON"
+end
+
 -- Returns true for a unit we should auto-control (military combat or religious).
+-- Filter = "has offensive strength" (combat / ranged / religious) MINUS explicit
+-- role exclusions (recon). Civilians (Builder, Settler, Trader, Great People,
+-- Spy, etc.) have zero combat strength and are naturally excluded. Unknown/modded
+-- combat units are included by default (graceful).
 local function IsEligibleUnit(pUnit)
     if pUnit == nil then return false end
     if pUnit:IsDead() or pUnit:IsDelayedDeath() then return false end
@@ -102,7 +117,10 @@ local function IsEligibleUnit(pUnit)
     local info = GameInfo.Units[pUnit:GetUnitType()]
     if info == nil then return false end
 
-    -- Military: has combat strength and is a real attacking class.
+    -- Explicit exclusions: recon units are skipped even though they have combat.
+    if IsRecon(pUnit) then return false end
+
+    -- Has offensive capability of some kind?
     local combat = pUnit:GetCombat()
     local rangedCombat = pUnit:GetRangedCombat()
     local religiousCombat = 0
@@ -120,9 +138,70 @@ local function IsReligious(pUnit)
     return ok and val ~= nil and val > 0
 end
 
+-- A "spread" religious unit (Missionary/Guru) can spread religion but CANNOT do
+-- religious combat -- unlike an Apostle/Inquisitor, which carry a religious
+-- PromotionClass (PROMOTION_CLASS_APOSTLE / _INQUISITOR). We route spread units
+-- to the convert-and-explore behavior instead of the attack pipeline.
+-- Detection: religious + no combat promotion class. (Missionary in Units.xml has
+-- no PromotionClass; Apostle has PROMOTION_CLASS_APOSTLE.)
+local function IsMissionary(pUnit)
+    if not IsReligious(pUnit) then return false end
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    if not ok or ut == nil then return false end
+    local info = GameInfo.Units[ut]
+    if info == nil then return false end
+    local pc = info.PromotionClass
+    -- Apostles/Inquisitors have a religious promotion class and CAN attack.
+    if pc == "PROMOTION_CLASS_APOSTLE" or pc == "PROMOTION_CLASS_INQUISITOR" then
+        return false
+    end
+    -- Otherwise a religious unit with no combat promotion class = spread/support.
+    return true
+end
+
+-- An Apostle can BOTH attack (religious combat) AND spread religion. Detected by
+-- the APOSTLE promotion class.
+local function IsApostle(pUnit)
+    if not IsReligious(pUnit) then return false end
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    if not ok or ut == nil then return false end
+    local info = GameInfo.Units[ut]
+    return info ~= nil and info.PromotionClass == "PROMOTION_CLASS_APOSTLE"
+end
+
+-- Remaining spread charges (runtime). 0 if unavailable/none.
+local function SpreadChargesLeft(pUnit)
+    local ok, v = Try("GetSpreadCharges", function() return pUnit:GetSpreadCharges() end)
+    return (ok and v) or 0
+end
+
+-- Domain helpers (GameInfo.Units[...].Domain: DOMAIN_LAND/SEA/AIR).
+local function UnitDomain(pUnit)
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    if not ok or ut == nil then return nil end
+    local info = GameInfo.Units[ut]
+    return info and info.Domain or nil
+end
+
+-- Air units (fighters, bombers) use AIR_ATTACK / DEPLOY, not tile movement.
+local function IsAir(pUnit)
+    return UnitDomain(pUnit) == "DOMAIN_AIR"
+end
+
+-- Bombard strength (naval broadsides, some siege) is separate from ranged.
+local function BombardCombat(pUnit)
+    local ok, v = Try("GetBombardCombat", function() return pUnit:GetBombardCombat() end)
+    return (ok and v) or 0
+end
+
+-- "Ranged" = attacks at a distance without moving adjacent. Covers true ranged
+-- combat AND bombard combat (naval broadsides), both of which use RANGE_ATTACK.
 local function IsRanged(pUnit)
-    local rc = pUnit:GetRangedCombat()
-    return rc ~= nil and rc > 0 and pUnit:GetRange() ~= nil and pUnit:GetRange() > 0
+    local range = pUnit:GetRange() or 0
+    if range <= 0 then return false end
+    local rc = pUnit:GetRangedCombat() or 0
+    local bc = BombardCombat(pUnit)
+    return rc > 0 or bc > 0
 end
 
 -- Fraction of max HP remaining, 0..1. Civ6 units have max HP of 100.
@@ -196,6 +275,10 @@ local function GetExecutionPriority(pUnit)
     if IsSupport(pUnit) then
         return PRIORITY_SUPPORT
     end
+    -- Air strikes act like ranged fire support: fire after melee soften targets.
+    if IsAir(pUnit) then
+        return PRIORITY_RANGED
+    end
     -- Ranged & siege both attack at distance and benefit from melee going first,
     -- but siege fires after pure ranged (e.g. archers first, then bombards).
     if IsRanged(pUnit) then
@@ -218,7 +301,10 @@ local function DescribeUnit(pUnit)
         typeName = (info and (info.UnitType or ut)) or tostring(ut)
     end
     local kind = "melee"
-    if IsReligious(pUnit) then kind = "religious"
+    if IsAir(pUnit) then kind = "air"
+    elseif IsApostle(pUnit) then kind = "apostle"
+    elseif IsMissionary(pUnit) then kind = "missionary"
+    elseif IsReligious(pUnit) then kind = "religious"
     elseif IsRanged(pUnit) then kind = IsSiege(pUnit) and "siege" or "ranged" end
     return string.format("u#%s %s @(%s,%s) hp=%s%% [%s]",
         S(pUnit:GetID()), S(typeName), S(pUnit:GetX()), S(pUnit:GetY()),
@@ -312,6 +398,129 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
 end
 
 -- ---------------------------------------------------------------------------
+--  Missionary (spread religious unit) support: convert cities, else explore.
+-- ---------------------------------------------------------------------------
+
+-- Forward declarations: these positioning helpers are defined later but used by
+-- FindExplorePlot below. Declaring them here makes the later `function X()`
+-- definitions assign to these locals (shared upvalue), so the reference resolves.
+local GetReachablePlots
+local DoMoveTo
+
+-- Our player's founded religion type, or nil if none / unavailable.
+local function OurReligionType(selfPlayerId)
+    local pPlayer = Players[selfPlayerId]
+    if pPlayer == nil then return nil end
+    local ok, rel = Try("GetReligion", function() return pPlayer:GetReligion() end)
+    if not ok or rel == nil then return nil end
+    local ok2, rtype = Try("GetReligionTypeCreated", function() return rel:GetReligionTypeCreated() end)
+    if not ok2 then return nil end
+    return rtype
+end
+
+-- Is this city's majority religion NOT ours (i.e. worth converting)?
+local function CityNeedsConversion(pCity, ourReligion)
+    if ourReligion == nil then return true end  -- no religion known: treat all as targets
+    local ok, rel = Try("city GetReligion", function() return pCity:GetReligion() end)
+    if not ok or rel == nil then return true end
+    local ok2, majority = Try("GetMajorityReligion", function() return rel:GetMajorityReligion() end)
+    if not ok2 then return true end
+    return majority ~= ourReligion
+end
+
+-- Gather visible cities that need our religion, tagged own/foreign for priority.
+-- Returns list of { obj, x, y, dist, isOwn }.
+local function GatherConversionTargets(pUnit, selfPlayerId)
+    local targets = {}
+    local ux, uy = pUnit:GetX(), pUnit:GetY()
+    local ourReligion = OurReligionType(selfPlayerId)
+
+    for _, player in ipairs(Game.GetPlayers()) do
+        local pid = player:GetID()
+        local pCities = player:GetCities()
+        if pCities ~= nil then
+            for _, c in pCities:Members() do
+                if c ~= nil then
+                    local cx, cy = c:GetX(), c:GetY()
+                    if IsPlotVisibleTo(selfPlayerId, cx, cy)
+                       and CityNeedsConversion(c, ourReligion) then
+                        table.insert(targets, {
+                            obj = c, x = cx, y = cy,
+                            dist = PlotDistance(ux, uy, cx, cy),
+                            isOwn = (pid == selfPlayerId),
+                        })
+                    end
+                end
+            end
+        end
+    end
+    return targets
+end
+
+-- Pick the best conversion target: OUR unconverted cities first (nearest), then
+-- foreign/neutral (nearest). Returns the target or nil.
+local function ChooseConversionTarget(convTargets)
+    local bestOwn, bestOwnDist = nil, math.huge
+    local bestOther, bestOtherDist = nil, math.huge
+    for _, t in ipairs(convTargets) do
+        if t.isOwn then
+            if t.dist < bestOwnDist then bestOwnDist = t.dist; bestOwn = t end
+        else
+            if t.dist < bestOtherDist then bestOtherDist = t.dist; bestOther = t end
+        end
+    end
+    if bestOwn ~= nil then return bestOwn end
+    return bestOther
+end
+
+-- Find the reachable plot closest to the nearest UNREVEALED tile (fog edge), so
+-- an idle missionary wanders outward to explore. Returns x,y or nil.
+local function FindExplorePlot(pUnit, selfPlayerId)
+    local vis = PlayersVisibility and PlayersVisibility[selfPlayerId] or nil
+    local reach = GetReachablePlots and GetReachablePlots(pUnit) or nil
+    if reach == nil then return nil end
+
+    -- For each reachable plot, score by how close it is to unrevealed territory.
+    -- We approximate "near the fog edge" as: a reachable plot that has at least
+    -- one not-yet-revealed neighbor is ideal; otherwise take the plot furthest
+    -- from our current position (push outward).
+    local ux, uy = pUnit:GetX(), pUnit:GetY()
+    local bestEdgeX, bestEdgeY = nil, nil
+    local bestFarX, bestFarY, bestFarDist = nil, nil, -1
+
+    local function IsRevealed(x, y)
+        if vis == nil then return true end
+        local ok, r = Try("IsRevealed", function()
+            -- IsRevealed takes a plot index in the real API; convert via Map.
+            local pPlot = Map.GetPlot and Map.GetPlot(x, y) or nil
+            if pPlot == nil then return true end
+            return vis:IsRevealed(pPlot:GetIndex())
+        end)
+        if not ok then return true end
+        return r == true
+    end
+
+    for _, p in ipairs(reach) do
+        -- furthest-from-start fallback
+        local d = PlotDistance(ux, uy, p.x, p.y)
+        if d > bestFarDist then bestFarDist = d; bestFarX, bestFarY = p.x, p.y end
+        -- fog-edge preference: any unrevealed neighbor?
+        if bestEdgeX == nil then
+            local neighbors = { {p.x+1,p.y},{p.x-1,p.y},{p.x,p.y+1},{p.x,p.y-1} }
+            for _, n in ipairs(neighbors) do
+                if not IsRevealed(n[1], n[2]) then
+                    bestEdgeX, bestEdgeY = p.x, p.y
+                    break
+                end
+            end
+        end
+    end
+
+    if bestEdgeX ~= nil then return bestEdgeX, bestEdgeY end
+    return bestFarX, bestFarY
+end
+
+-- ---------------------------------------------------------------------------
 --  Combat prediction
 --
 --  Uses CombatManager.SimulateAttackVersus(attackerCID, defenderCID [,type]),
@@ -334,6 +543,9 @@ local m_combatPredictor = nil  -- resolved once, then reused
 -- Pick the CombatType enum value for an attacker vs. a target.
 local function CombatTypeFor(attacker, target)
     if CombatTypes == nil then return 0 end
+    if IsAir(attacker) then
+        return CombatTypes.AIR
+    end
     if IsReligious(attacker) then
         return CombatTypes.RELIGIOUS
     end
@@ -486,6 +698,11 @@ end
 local function CanAttackNow(pUnit, tgt)
     local ux, uy = pUnit:GetX(), pUnit:GetY()
     local dist = PlotDistance(ux, uy, tgt.x, tgt.y)
+    if IsAir(pUnit) then
+        -- Air units strike anywhere within their operational range from base.
+        local range = pUnit:GetRange() or 0
+        return range > 0 and dist <= range
+    end
     if IsRanged(pUnit) then
         local range = pUnit:GetRange() or 1
         return dist <= range
@@ -523,8 +740,35 @@ local function TryOperation(label, pUnit, opType, params)
     return issued
 end
 
-local function DoFortify(pUnit)
-    return TryOperation("Fortify", pUnit, UnitOperationTypes.FORTIFY, nil)
+-- "Hold this turn" -- the idle/no-op action. IMPORTANT: Fortify is a MILITARY
+-- action; religious units (Missionary/Apostle/etc.) and other civilians CANNOT
+-- fortify -- the game gives them Sleep / Skip Turn instead. So we pick the right
+-- op by unit type and let CanStartOperation gate each candidate, using the first
+-- that's legal. This avoids issuing a Fortify the engine would reject (which
+-- would leave a religious unit doing nothing and spam the log).
+local function DoHold(pUnit)
+    local isCivilianReligious = IsReligious(pUnit)
+        or (UnitDomain(pUnit) ~= nil and pUnit:GetCombat() == 0
+            and pUnit:GetRangedCombat() == 0)
+
+    if not isCivilianReligious then
+        -- Combat unit: fortify (defensive bonus + heal).
+        if TryOperation("Fortify", pUnit, UnitOperationTypes.FORTIFY, nil) then
+            return true
+        end
+    end
+    -- Civilian/religious (or fortify was illegal): sleep, else skip turn.
+    if UnitOperationTypes.SLEEP ~= nil then
+        if TryOperation("Sleep", pUnit, UnitOperationTypes.SLEEP, nil) then
+            return true
+        end
+    end
+    if UnitOperationTypes.SKIP_TURN ~= nil then
+        if TryOperation("SkipTurn", pUnit, UnitOperationTypes.SKIP_TURN, nil) then
+            return true
+        end
+    end
+    return false
 end
 
 local function DoAttackAt(pUnit, x, y)
@@ -532,8 +776,12 @@ local function DoAttackAt(pUnit, x, y)
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
 
-    if IsRanged(pUnit) then
-        -- Ranged / siege: dedicated RANGE_ATTACK op.
+    if IsAir(pUnit) then
+        -- Air units (fighters/bombers) strike via AIR_ATTACK from their base --
+        -- no tile movement. Same PARAM_X/Y target (WorldInput.lua UnitAirAttack).
+        return TryOperation("AirAttack", pUnit, UnitOperationTypes.AIR_ATTACK, params)
+    elseif IsRanged(pUnit) then
+        -- Ranged / siege / naval bombard: dedicated RANGE_ATTACK op.
         return TryOperation("RangeAttack", pUnit, UnitOperationTypes.RANGE_ATTACK, params)
     else
         -- Melee / religious: MOVE_TO onto the target WITH the ATTACK modifier.
@@ -546,7 +794,7 @@ local function DoAttackAt(pUnit, x, y)
     end
 end
 
-local function DoMoveTo(pUnit, x, y)
+function DoMoveTo(pUnit, x, y)  -- assigns to the forward-declared local
     local params = {}
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
@@ -556,6 +804,12 @@ local function DoMoveTo(pUnit, x, y)
     return TryOperation("MoveTo", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
 
+-- Spread religion at the unit's current plot (Missionary must be on/adjacent to
+-- the target city; the engine validates via CanStartOperation).
+local function DoSpreadReligion(pUnit)
+    return TryOperation("SpreadReligion", pUnit, UnitOperationTypes.SPREAD_RELIGION, nil)
+end
+
 -- ---------------------------------------------------------------------------
 --  Positioning: find the reachable plot (within movement) that minimizes
 --  distance to the chosen enemy. For ranged "move to max range then attack",
@@ -563,7 +817,7 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Returns a list of {x,y} plots the unit can reach this turn.
-local function GetReachablePlots(pUnit)
+function GetReachablePlots(pUnit)  -- assigns to the forward-declared local
     local plots = {}
     local ok, tbl = Try("GetReachableMovement", function()
         return UnitManager.GetReachableMovement(pUnit)
@@ -656,6 +910,29 @@ local function DecideAction(pUnit, tgt, pred, mode)
     end
     local canHitNow = CanAttackNow(pUnit, tgt)
 
+    -- Air units are a special case: they strike from base via AIR_ATTACK and do
+    -- NOT path across tiles (their "move" is a strategic rebase/DEPLOY we don't
+    -- automate). So they only ever attack-in-range or hold -- never advance or
+    -- moveattack. They still respect each mode's aggression gates.
+    if IsAir(pUnit) then
+        if not canHitNow then
+            return "fortify"  -- no target in air-strike range; hold
+        end
+        if mode == MODE_AGGRESSIVE then
+            -- Strike unless it would down our own aircraft without a kill.
+            if wouldDie and not wouldKill then return "fortify" end
+            return "attack"
+        elseif mode == MODE_BALANCED then
+            if hp < 0.5 and not wouldKill then return "fortify" end
+            if wouldDie and not wouldKill then return "fortify" end
+            return "attack"
+        else -- MODE_PASSIVE
+            if wouldKill and not wouldDie then return "attack" end
+            if not takesDamage and not wouldDie then return "attack" end
+            return "fortify"
+        end
+    end
+
     -- Ranged move+attack availability (In-Between rule).
     local firingX, firingY = nil, nil
     if ranged and not canHitNow then
@@ -716,24 +993,49 @@ end
 --  Execute one unit's turn.
 -- ---------------------------------------------------------------------------
 
-local function ProcessUnit(pUnit, selfPlayerId, mode)
-    DebugLog("processing " .. DescribeUnit(pUnit))
+-- Forward declarations for the shared execute helpers (defined below), used by
+-- ProcessMissionary here and by ProcessApostle further down.
+local ExecuteSpread, ExecuteExplore
 
+-- Missionary/Guru: convert the nearest unconverted city (our cities first, then
+-- foreign/neutral); if none visible, wander toward the fog edge to explore.
+-- Behavior is identical in all modes (these units can't fight).
+local function ProcessMissionary(pUnit, selfPlayerId)
+    if ExecuteSpread(pUnit, selfPlayerId) then return true end
+    if ExecuteExplore(pUnit, selfPlayerId) then return true end
+    DebugLog("  missionary: nothing to convert or explore -> fortify")
+    DoHold(pUnit)
+    return true
+end
+
+-- Run the combat pipeline for a unit: gather enemies, pick the best target, and
+-- act per the mode's rules. Returns:
+--   "acted"     an operation was issued (attack/moveattack/advance/fortify)
+--   "notarget"  no enemy target existed at all (caller may fall through)
+-- The `fortifyIfNoTarget` flag controls whether we fortify (true) or just report
+-- "notarget" (false) when there's nothing to attack -- Apostles want to fall
+-- through to spread/explore instead of fortifying.
+local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
 
     if #targets == 0 then
-        -- Nothing to do; fortify to heal/hold. (Aggressive explicitly wants this.)
-        DebugLog("  no visible enemy target -> fortify")
-        DoFortify(pUnit)
-        return true
+        if fortifyIfNoTarget then
+            DebugLog("  no visible enemy target -> fortify")
+            DoHold(pUnit)
+            return "acted"
+        end
+        return "notarget"
     end
     DebugLog("  " .. S(#targets) .. " candidate target(s) in view")
 
     local tgt, pred = ChooseBestTarget(pUnit, targets)
     if tgt == nil then
-        DebugLog("  no predictable target -> fortify")
-        DoFortify(pUnit)
-        return true
+        if fortifyIfNoTarget then
+            DebugLog("  no predictable target -> fortify")
+            DoHold(pUnit)
+            return "acted"
+        end
+        return "notarget"
     end
 
     -- Trace the chosen target + the prediction numbers that drive the decision.
@@ -772,10 +1074,124 @@ local function ProcessUnit(pUnit, selfPlayerId, mode)
         AdvanceTowardTarget(pUnit, tgt)
 
     else -- fortify
-        DoFortify(pUnit)
+        DoHold(pUnit)
     end
 
+    return "acted"
+end
+
+-- Spread religion at the nearest unconverted city (our cities first). Returns
+-- true if it acted (spread or advanced toward a city), false if none to convert.
+function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared local
+    local convTargets = GatherConversionTargets(pUnit, selfPlayerId)
+    local target = ChooseConversionTarget(convTargets)
+    if target == nil then return false end
+
+    local dist = PlotDistance(pUnit:GetX(), pUnit:GetY(), target.x, target.y)
+    DebugLog(string.format("  spread: %s city @(%s,%s) dist=%s",
+        target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist)))
+    if dist <= 1 then
+        if DoSpreadReligion(pUnit) then return true end
+    end
+    AdvanceTowardTarget(pUnit, target)
     return true
+end
+
+-- Move toward the fog edge to explore. Returns true if it moved.
+function ExecuteExplore(pUnit, selfPlayerId)  -- assigns to forward-declared local
+    local ex, ey = FindExplorePlot(pUnit, selfPlayerId)
+    if ex ~= nil and (ex ~= pUnit:GetX() or ey ~= pUnit:GetY()) then
+        DebugLog(string.format("  explore toward (%s,%s)", S(ex), S(ey)))
+        DoMoveTo(pUnit, ex, ey)
+        return true
+    end
+    return false
+end
+
+-- Distance to the nearest enemy religious unit we could attack (or math.huge).
+local function NearestAttackDist(pUnit, selfPlayerId)
+    local targets = GatherEnemyTargets(pUnit, selfPlayerId)
+    local best = math.huge
+    for _, t in ipairs(targets) do
+        if (t.dist or math.huge) < best then best = t.dist end
+    end
+    return best
+end
+
+-- Distance to the nearest conversion target (or math.huge).
+local function NearestSpreadDist(pUnit, selfPlayerId)
+    local convTargets = GatherConversionTargets(pUnit, selfPlayerId)
+    local target = ChooseConversionTarget(convTargets)
+    if target == nil then return math.huge end
+    return PlotDistance(pUnit:GetX(), pUnit:GetY(), target.x, target.y)
+end
+
+-- Apostle: can attack AND spread. Mode decides which to prioritize; NEVER spread
+-- on the last charge (attack instead, or explore if no enemy). Fall back to
+-- explore when neither is possible.
+local function ProcessApostle(pUnit, selfPlayerId, mode)
+    local charges = SpreadChargesLeft(pUnit)
+    local lastCharge = (charges <= 1)
+    local attackDist = NearestAttackDist(pUnit, selfPlayerId)
+    local spreadDist = NearestSpreadDist(pUnit, selfPlayerId)
+    local hasAttack = attackDist < math.huge
+    local hasSpread = spreadDist < math.huge
+    DebugLog(string.format("  apostle: charges=%s lastCharge=%s attackDist=%s spreadDist=%s",
+        S(charges), tostring(lastCharge), S(attackDist), S(spreadDist)))
+
+    -- Last charge: never spread. Attack if possible, else explore (save charge).
+    -- Use AGGRESSIVE combat rules here regardless of the panel mode -- the
+    -- last-charge rule is "prioritize attack", so we don't want Passive's
+    -- don't-attack gate to turn a forced attack into a fortify. (Suicide is still
+    -- avoided; Aggressive rules already guard against attacks that kill us.)
+    if lastCharge then
+        if hasAttack then
+            return ExecuteCombat(pUnit, selfPlayerId, MODE_AGGRESSIVE, true)
+        end
+        if not ExecuteExplore(pUnit, selfPlayerId) then DoHold(pUnit) end
+        return true
+    end
+
+    -- >1 charge: mode decides attack vs spread.
+    local preferAttack
+    if mode == MODE_AGGRESSIVE then
+        preferAttack = hasAttack                 -- attack whenever an enemy is visible
+    elseif mode == MODE_PASSIVE then
+        preferAttack = not hasSpread             -- spread always; attack only if no spread
+    else -- MODE_BALANCED
+        preferAttack = (attackDist <= spreadDist) -- whichever is closer
+    end
+
+    if preferAttack and hasAttack then
+        if ExecuteCombat(pUnit, selfPlayerId, mode, false) == "acted" then return true end
+    end
+    if hasSpread then
+        if ExecuteSpread(pUnit, selfPlayerId) then return true end
+    end
+    -- Secondary: if we preferred spread but it fell through, try attack.
+    if hasAttack then
+        if ExecuteCombat(pUnit, selfPlayerId, mode, false) == "acted" then return true end
+    end
+    -- Nothing to do -> explore.
+    if not ExecuteExplore(pUnit, selfPlayerId) then DoHold(pUnit) end
+    return true
+end
+
+local function ProcessUnit(pUnit, selfPlayerId, mode)
+    DebugLog("processing " .. DescribeUnit(pUnit))
+
+    -- Missionaries/Gurus can't fight -> convert-and-explore behavior.
+    if IsMissionary(pUnit) then
+        return ProcessMissionary(pUnit, selfPlayerId)
+    end
+
+    -- Apostles can attack AND spread -> mode-driven priority + last-charge rule.
+    if IsApostle(pUnit) then
+        return ProcessApostle(pUnit, selfPlayerId, mode)
+    end
+
+    -- All other combat units: standard combat pipeline (fortify if no target).
+    return (ExecuteCombat(pUnit, selfPlayerId, mode, true) == "acted")
 end
 
 -- ---------------------------------------------------------------------------

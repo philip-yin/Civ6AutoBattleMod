@@ -168,17 +168,19 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 8. Religious unit ignores military enemy (no valid target -> fortify)
+-- 8. Religious spread unit with nothing to do HOLDS via SLEEP (NOT Fortify --
+--    religious/civilian units can't fortify).
 -- -------------------------------------------------------------------------
 scenario(
-    { x=5, y=5, religious=50 },                      -- our apostle
-    { x=6, y=5, combat=40 },                          -- enemy WARRIOR (not religious)
+    { x=5, y=5, religious=50, unitType="UNIT_MISSIONARY",
+      formationClass="FORMATION_CLASS_CIVILIAN" },     -- our missionary
+    { x=6, y=5, combat=40 },                            -- enemy WARRIOR (irrelevant to it)
     nil,
     MODE_AGGRESSIVE)
 do
     local op = firstOp(100)
-    check("Religious unit ignores military target -> fortify",
-        op and op.op == "FORTIFY", op and op.op or "no op")
+    check("Religious unit holds via SLEEP, not Fortify",
+        op and op.op == "SLEEP", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
@@ -338,6 +340,308 @@ do
     AutoBattle_RunPass()
     check("Disallowed MOVE_TO is not issued",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+end
+
+-- -------------------------------------------------------------------------
+-- 18. Air unit in range -> AIR_ATTACK op (not RANGE_ATTACK / MOVE_TO)
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, ranged=60, range=4, domain="DOMAIN_AIR", unitType="UNIT_BOMBER" },
+    { x=8, y=5, combat=40 },                          -- 3 tiles, within air range 4
+    M.makeCombatResult(0, 0, 50, 0),
+    MODE_AGGRESSIVE)
+do
+    local op = firstOp(100)
+    check("Air unit in range uses AIR_ATTACK",
+        op and op.op == "AIR_ATTACK", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 19. Air unit with target OUT of range -> fortify (never advances/deploys)
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, ranged=60, range=4, domain="DOMAIN_AIR", unitType="UNIT_BOMBER" },
+    { x=15, y=5, combat=40 },                         -- far out of range
+    nil,
+    MODE_AGGRESSIVE)
+do
+    local op = firstOp(100)
+    check("Air unit out of range -> fortify (no advance)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 20. Naval melee ship attacks adjacent via MOVE_TO+ATTACK
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, combat=45, domain="DOMAIN_SEA", unitType="UNIT_GALLEY" },
+    { x=6, y=5, combat=30, domain="DOMAIN_SEA", unitType="UNIT_GALLEY", id=200 },
+    M.makeCombatResult(0, 0, 40, 15),
+    MODE_AGGRESSIVE)
+do
+    local op = firstOp(100)
+    check("Naval melee ship attacks via MOVE_TO+ATTACK",
+        op and op.op == "MOVE_TO" and op.mod == UnitOperationMoveModifiers.ATTACK,
+        op and (op.op .. " mod=" .. tostring(op.mod)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 21. Naval bombard-only ship classifies as ranged -> RANGE_ATTACK
+--     (bombard=strength, ranged=0, but has range)
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, combat=40, bombard=50, ranged=0, range=2,
+      domain="DOMAIN_SEA", unitType="UNIT_FRIGATE" },
+    { x=7, y=5, combat=30, domain="DOMAIN_SEA", unitType="UNIT_GALLEY", id=200 },
+    M.makeCombatResult(0, 0, 45, 0),
+    MODE_AGGRESSIVE)
+do
+    local op = firstOp(100)
+    check("Naval bombard ship uses RANGE_ATTACK (bombard classified ranged)",
+        op and op.op == "RANGE_ATTACK", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 22. Missionary adjacent to unconverted city -> SPREAD_RELIGION
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN", promotionClass=nil } },
+        cities = { { id=300, x=6, y=5, religion="REL_PAGAN" } } }  -- our unconverted city, adjacent
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    local op = firstOp(100)
+    check("Missionary adjacent to unconverted city -> SPREAD_RELIGION",
+        op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 23. Missionary far from unconverted city -> advances toward it
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN" } },
+        cities = { { id=300, x=10, y=5, religion="REL_PAGAN" } } }
+    -- Reachable plots: index 6005 = (6,5) closer to the city.
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    local op = firstOp(100)
+    check("Missionary advances toward distant unconverted city",
+        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 24. Missionary prioritizes OUR city over a closer foreign one
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN" } },
+        cities = { { id=300, x=6, y=5, religion="REL_OURS" },      -- ours, already converted (skip)
+                   { id=301, x=9, y=5, religion="REL_PAGAN" } } }  -- ours, unconverted, dist 4
+    M.players[1] = M.makePlayer{ id=1,
+        cities = { { id=400, x=7, y=5, religion="REL_PAGAN" } } }  -- foreign, unconverted, dist 2 (closer)
+    M.plots[6005]={x=6,y=5}; M.plots[8005]={x=8,y=5}
+    M.reachablePlots[100] = { 6005, 8005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    local op = firstOp(100)
+    -- Should head toward OUR unconverted city (9,5) -> nearest reachable is (8,5),
+    -- NOT toward the closer foreign city (7,5) -> (6,5).
+    check("Missionary prefers our unconverted city over closer foreign",
+        op and op.op == "MOVE_TO" and op.x == 8 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 25. Missionary with no unconverted city -> explores toward fog edge
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN" } },
+        cities = { { id=300, x=6, y=5, religion="REL_OURS" } } }  -- already ours -> no target
+    -- Reachable plot (7,5); its neighbor (8,5) is unrevealed -> fog edge.
+    M.plots[7005] = { x=7, y=5 }
+    M.reachablePlots[100] = { 7005 }
+    M.revealedDefault = true
+    M.revealed["8,5"] = false  -- fog just past (7,5)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    local op = firstOp(100)
+    check("Missionary with nothing to convert explores toward fog edge",
+        op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- Helper: build an Apostle scenario. Our apostle vs optional enemy religious
+-- unit + optional unconverted city.
+local function apostleScenario(opts)
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    local ourUnits = { { id=100, x=5, y=5, religious=110,
+        unitType="UNIT_APOSTLE", promotionClass="PROMOTION_CLASS_APOSTLE",
+        formationClass="FORMATION_CLASS_CIVILIAN",
+        spreadCharges = opts.charges or 3 } }
+    local ourCities = {}
+    if opts.ownCity then table.insert(ourCities, opts.ownCity) end
+    M.players[0] = M.makePlayer{ id=0, units=ourUnits, cities=ourCities }
+
+    if opts.enemyReligious then
+        M.players[1] = M.makePlayer{ id=1, units={
+            { id=200, x=opts.enemyReligious.x, y=opts.enemyReligious.y, religious=100,
+              unitType="UNIT_APOSTLE", promotionClass="PROMOTION_CLASS_APOSTLE",
+              formationClass="FORMATION_CLASS_CIVILIAN", spreadCharges=3 } } }
+        M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+        M.combatResults["100:200"] = opts.combat or M.makeCombatResult(0,0,40,10)
+    end
+    if opts.reach then M.reachablePlots[100] = opts.reach end
+    for idx, p in pairs(opts.plots or {}) do M.plots[idx] = p end
+    if opts.fog then for k,v in pairs(opts.fog) do M.revealed[k]=v end end
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, opts.mode)
+    AutoBattle_RunPass()
+end
+
+-- -------------------------------------------------------------------------
+-- 26. Aggressive apostle: enemy religious unit visible -> attack
+-- -------------------------------------------------------------------------
+apostleScenario{ mode=MODE_AGGRESSIVE, charges=3,
+    enemyReligious={x=6,y=5},                         -- adjacent enemy apostle
+    ownCity={ id=300, x=9, y=5, religion="REL_PAGAN" }} -- also a spread option
+do
+    local op = firstOp(100)
+    check("Aggressive apostle attacks when enemy religious visible",
+        op and op.op == "MOVE_TO", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 27. Passive apostle: prioritizes spread even with enemy visible
+-- -------------------------------------------------------------------------
+apostleScenario{ mode=MODE_PASSIVE, charges=3,
+    enemyReligious={x=6,y=5},
+    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" }} -- adjacent unconverted city
+do
+    local op = firstOp(100)
+    check("Passive apostle spreads even when enemy visible",
+        op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 28. Balanced apostle: picks the CLOSER of attack vs spread (spread closer)
+-- -------------------------------------------------------------------------
+apostleScenario{ mode=MODE_BALANCED, charges=3,
+    enemyReligious={x=10,y=5},                          -- far enemy (dist 5)
+    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" }} -- adjacent city (dist 1)
+do
+    local op = firstOp(100)
+    check("Balanced apostle picks closer target (spread)",
+        op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 29. Last charge: never spread -> attack even in Passive
+-- -------------------------------------------------------------------------
+apostleScenario{ mode=MODE_PASSIVE, charges=1,
+    enemyReligious={x=6,y=5},
+    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" }} -- adjacent city, but last charge
+do
+    local op = firstOp(100)
+    check("Last charge forces attack (never spread) even in Passive",
+        op and op.op == "MOVE_TO", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 30. Last charge + no enemy -> explore (save the charge, don't spread)
+-- -------------------------------------------------------------------------
+apostleScenario{ mode=MODE_AGGRESSIVE, charges=1,
+    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" },  -- unconverted, but last charge
+    reach={ 7005 }, plots={ [7005]={x=7,y=5} }, fog={ ["8,5"]=false } }
+do
+    local op = firstOp(100)
+    check("Last charge + no enemy -> explore (does not spread)",
+        op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 31. Combat unit with no target FORTIFIES (fortify is legal for it)
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, combat=50 },
+    { x=6, y=5, combat=30 },
+    nil,                                              -- no combat result -> no predictable target
+    MODE_AGGRESSIVE)
+do
+    -- With no prediction the target is unpredictable -> holds. Combat unit -> Fortify.
+    local op = firstOp(100)
+    check("Combat unit holds via FORTIFY (fortify is legal)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 32. Scout (recon, Combat=10) is EXCLUDED -> no ops issued
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=10, unitType="UNIT_SCOUT",
+          promotionClass="PROMOTION_CLASS_RECON" } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"]=M.makeCombatResult(0,0,20,40)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    check("Scout (recon) is excluded from auto-battle",
+        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+end
+
+-- -------------------------------------------------------------------------
+-- 33. Builder (Combat=0, civilian) is EXCLUDED -> no ops issued
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=0, unitType="UNIT_BUILDER",
+          formationClass="FORMATION_CLASS_CIVILIAN" } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
+    AutoBattle_RunPass()
+    check("Builder (civilian) is excluded from auto-battle",
+        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+end
+
+-- -------------------------------------------------------------------------
+-- 34. Normal warrior (combat, no recon class) is still INCLUDED
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, combat=50, unitType="UNIT_WARRIOR" },
+    { x=6, y=5, combat=30 },
+    M.makeCombatResult(0, 0, 40, 10),
+    MODE_AGGRESSIVE)
+do
+    check("Normal warrior is still included (acts)",
+        #opsFor(100) > 0, tostring(#opsFor(100)) .. " ops")
 end
 
 realPrint(("=== %d passed, %d failed ==="):format(passed, failed))
