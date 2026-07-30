@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GameData>
+    <LocalizedText>
+        <!-- Panel + generic -->
+        <Row Tag="LOC_AUTOBATTLE_TITLE" Language="en_US">
+            <Text>Auto Battle</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_ENABLE" Language="en_US">
+            <Text>Enable Auto Battle</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_ENABLE_TT" Language="en_US">
+            <Text>When enabled, your military and religious units act automatically according to the selected mode at the start of each of your turns. You can also press "Run Now" to act immediately.</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_RUN_NOW" Language="en_US">
+            <Text>Run Now</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_RUN_NOW_TT" Language="en_US">
+            <Text>Immediately run one auto-battle pass over all eligible units using the selected mode.</Text>
+        </Row>
+
+        <!-- Modes -->
+        <Row Tag="LOC_AUTOBATTLE_MODE_AGGRESSIVE" Language="en_US">
+            <Text>Aggressive</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT" Language="en_US">
+            <Text>Always attack unless the combat preview shows the unit would die. Otherwise fortify and heal. Units advance to minimize distance to the closest enemy.</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_MODE_BALANCED" Language="en_US">
+            <Text>In-Between</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_MODE_BALANCED_TT" Language="en_US">
+            <Text>Fortify if below 50% health, unless an attack would kill the enemy. Only units above 50% health advance toward the enemy. Ranged units move to maximum range then attack when possible.</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_MODE_PASSIVE" Language="en_US">
+            <Text>Passive</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_MODE_PASSIVE_TT" Language="en_US">
+            <Text>Only attack if it costs no health, unless the attack would kill the enemy (so melee rarely attacks). Never advance toward enemy units. Otherwise fortify.</Text>
+        </Row>
+
+        <!-- Status line -->
+        <Row Tag="LOC_AUTOBATTLE_STATUS_IDLE" Language="en_US">
+            <Text>Idle</Text>
+        </Row>
+        <Row Tag="LOC_AUTOBATTLE_STATUS_RAN" Language="en_US">
+            <Text>Acted on {1_Count} unit(s)</Text>
+        </Row>
+    </LocalizedText>
+</GameData>

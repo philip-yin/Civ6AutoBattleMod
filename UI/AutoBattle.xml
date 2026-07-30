@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Battle control panel. A small draggable window anchored top-right. -->
+<Context Name="AutoBattle">
+    <!-- Root draggable container -->
+    <Container ID="AutoBattlePanel" Anchor="R,T" Offset="8,140" Size="200,220" Hidden="0">
+        <!-- Background -->
+        <GridBox Size="200,220" Style="Frame_ThinFullPadding" />
+
+        <Stack StackGrowth="Bottom" Offset="12,10" WrapWidth="176" Padding="4">
+
+            <!-- Title -->
+            <Label ID="TitleLabel" String="LOC_AUTOBATTLE_TITLE" Font="TitleFont"
+                   FontSize="18" ColorSet="Beautiful_Black" Anchor="L,T" />
+
+            <!-- Enable checkbox -->
+            <CheckBox ID="EnableCheck" Size="176,28" Anchor="L,T" Offset="0,4">
+                <Label Anchor="L,C" Offset="30,0" String="LOC_AUTOBATTLE_ENABLE"
+                       FontSize="14" ToolTip="LOC_AUTOBATTLE_ENABLE_TT" />
+            </CheckBox>
+
+            <!-- Mode selection: three radio-style buttons -->
+            <Label String="Mode:" FontSize="13" Anchor="L,T" Offset="0,6" />
+
+            <GridButton ID="ModeAggressive" Size="176,26" Style="ControlButton" Anchor="L,T" Offset="0,2"
+                        ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
+                <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" />
+            </GridButton>
+
+            <GridButton ID="ModeBalanced" Size="176,26" Style="ControlButton" Anchor="L,T" Offset="0,2"
+                        ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
+                <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" />
+            </GridButton>
+
+            <GridButton ID="ModePassive" Size="176,26" Style="ControlButton" Anchor="L,T" Offset="0,2"
+                        ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
+                <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" />
+            </GridButton>
+
+            <!-- Run Now -->
+            <GridButton ID="RunNowButton" Size="176,30" Style="ControlButtonAlt" Anchor="L,T" Offset="0,8"
+                        ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
+                <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="14" />
+            </GridButton>
+
+            <!-- Status line -->
+            <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
+                   ColorSet="Beautiful_Black" Anchor="L,T" Offset="0,8" />
+
+        </Stack>
+    </Container>
+</Context>
