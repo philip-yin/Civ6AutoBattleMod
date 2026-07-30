@@ -36,11 +36,39 @@ local m_mode      = MODE_BALANCED
 local m_pendingShots = {}
 
 -- ---------------------------------------------------------------------------
---  Small helpers
+--  Logging
+--
+--  Log()      -- always printed: lifecycle, warnings, errors, pass summaries.
+--  DebugLog() -- only when DEBUG=true: per-unit decision tracing. Flip DEBUG on
+--                when something misbehaves to get the full "why" for each unit.
+--
+--  All lines are prefixed "[AutoBattle]" so you can filter the game's Lua.log:
+--      tail -f Lua.log | grep AutoBattle
 -- ---------------------------------------------------------------------------
+
+-- Per-unit decision tracing. Defaults ON for initial testing so the first runs
+-- are fully diagnosable. Once the mod behaves as expected, set this to false to
+-- keep normal-play logs quiet (the always-on Log() lines still record lifecycle,
+-- warnings, and errors).
+local DEBUG = true
 
 local function Log(msg)
     print("[AutoBattle] " .. tostring(msg))
+end
+
+local function DebugLog(msg)
+    if DEBUG then print("[AutoBattle][dbg] " .. tostring(msg)) end
+end
+
+-- Safe read of a value for logging (never errors, never nil-crashes concat).
+local function S(v)
+    if v == nil then return "nil" end
+    if type(v) == "number" then
+        -- Trim float noise for readability.
+        if v == math.floor(v) then return tostring(math.floor(v)) end
+        return string.format("%.1f", v)
+    end
+    return tostring(v)
 end
 
 -- Guarded call: returns (ok, result). Logs on failure.
@@ -178,6 +206,23 @@ local function GetExecutionPriority(pUnit)
     end
     -- Everything else that can fight adjacently: melee / cavalry / religious.
     return PRIORITY_MELEE
+end
+
+-- Compact human-readable descriptor of a unit for the log, e.g.
+--   "u#42 WARRIOR @(5,5) hp=80% [melee]".
+local function DescribeUnit(pUnit)
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    local typeName = "?"
+    if ok and ut ~= nil then
+        local info = GameInfo.Units[ut]
+        typeName = (info and (info.UnitType or ut)) or tostring(ut)
+    end
+    local kind = "melee"
+    if IsReligious(pUnit) then kind = "religious"
+    elseif IsRanged(pUnit) then kind = IsSiege(pUnit) and "siege" or "ranged" end
+    return string.format("u#%s %s @(%s,%s) hp=%s%% [%s]",
+        S(pUnit:GetID()), S(typeName), S(pUnit:GetX()), S(pUnit:GetY()),
+        S(HealthFraction(pUnit) * 100), kind)
 end
 
 -- ---------------------------------------------------------------------------
@@ -453,41 +498,62 @@ end
 --  Unit operations (attack / move / fortify), all guarded.
 -- ---------------------------------------------------------------------------
 
-local function DoFortify(pUnit)
-    Try("Fortify", function()
-        UnitManager.RequestOperation(pUnit, UnitOperationTypes.FORTIFY)
+-- Guarded RequestOperation: only issues if CanStartOperation approves (matches
+-- how the real UI gates every operation -- Civ6Common.lua / WorldInput.lua).
+-- Returns true if the operation was actually requested.
+local function TryOperation(label, pUnit, opType, params)
+    local ok, canStart = Try(label .. ".CanStart", function()
+        -- Signature: CanStartOperation(unit, opType, nil, tParameters)
+        if UnitManager.CanStartOperation == nil then return true end  -- API absent: attempt anyway
+        return UnitManager.CanStartOperation(pUnit, opType, nil, params)
     end)
+    if ok and canStart == false then
+        DebugLog(string.format("    op %s SKIPPED (CanStartOperation=false) unit=%s",
+            S(label), S(pUnit:GetID())))
+        return false  -- engine says this op isn't legal now; skip quietly
+    end
+    local issued = Try(label, function()
+        UnitManager.RequestOperation(pUnit, opType, params)
+    end)
+    DebugLog(string.format("    op %s %s unit=%s%s",
+        S(label), issued and "issued" or "FAILED", S(pUnit:GetID()),
+        (params and params[UnitOperationTypes.PARAM_X] ~= nil)
+            and (" -> (" .. S(params[UnitOperationTypes.PARAM_X]) .. "," ..
+                 S(params[UnitOperationTypes.PARAM_Y]) .. ")") or ""))
+    return issued
+end
+
+local function DoFortify(pUnit)
+    return TryOperation("Fortify", pUnit, UnitOperationTypes.FORTIFY, nil)
 end
 
 local function DoAttackAt(pUnit, x, y)
-    -- RANGE_ATTACK for ranged units; MOVE_TO (which auto-attacks on contact)
-    -- for melee/religious when adjacent.
+    local params = {}
+    params[UnitOperationTypes.PARAM_X] = x
+    params[UnitOperationTypes.PARAM_Y] = y
+
     if IsRanged(pUnit) then
-        local ok = Try("RangeAttack", function()
-            local params = {}
-            params[UnitOperationTypes.PARAM_X] = x
-            params[UnitOperationTypes.PARAM_Y] = y
-            UnitManager.RequestOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, params)
-        end)
-        return ok
+        -- Ranged / siege: dedicated RANGE_ATTACK op.
+        return TryOperation("RangeAttack", pUnit, UnitOperationTypes.RANGE_ATTACK, params)
     else
-        local ok = Try("MoveTo(attack)", function()
-            local params = {}
-            params[UnitOperationTypes.PARAM_X] = x
-            params[UnitOperationTypes.PARAM_Y] = y
-            UnitManager.RequestOperation(pUnit, UnitOperationTypes.MOVE_TO, params)
-        end)
-        return ok
+        -- Melee / religious: MOVE_TO onto the target WITH the ATTACK modifier.
+        -- Without PARAM_MODIFIERS = ATTACK the engine may reject / not attack
+        -- (see Civ6Common.lua RequestMoveOperation).
+        if UnitOperationMoveModifiers ~= nil then
+            params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
+        end
+        return TryOperation("MoveAttack", pUnit, UnitOperationTypes.MOVE_TO, params)
     end
 end
 
 local function DoMoveTo(pUnit, x, y)
-    return Try("MoveTo", function()
-        local params = {}
-        params[UnitOperationTypes.PARAM_X] = x
-        params[UnitOperationTypes.PARAM_Y] = y
-        UnitManager.RequestOperation(pUnit, UnitOperationTypes.MOVE_TO, params)
-    end)
+    local params = {}
+    params[UnitOperationTypes.PARAM_X] = x
+    params[UnitOperationTypes.PARAM_Y] = y
+    if UnitOperationMoveModifiers ~= nil then
+        params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.NONE
+    end
+    return TryOperation("MoveTo", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
 
 -- ---------------------------------------------------------------------------
@@ -651,21 +717,40 @@ end
 -- ---------------------------------------------------------------------------
 
 local function ProcessUnit(pUnit, selfPlayerId, mode)
+    DebugLog("processing " .. DescribeUnit(pUnit))
+
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
 
     if #targets == 0 then
         -- Nothing to do; fortify to heal/hold. (Aggressive explicitly wants this.)
+        DebugLog("  no visible enemy target -> fortify")
         DoFortify(pUnit)
         return true
     end
+    DebugLog("  " .. S(#targets) .. " candidate target(s) in view")
 
     local tgt, pred = ChooseBestTarget(pUnit, targets)
     if tgt == nil then
+        DebugLog("  no predictable target -> fortify")
         DoFortify(pUnit)
         return true
     end
 
+    -- Trace the chosen target + the prediction numbers that drive the decision.
+    if pred ~= nil then
+        DebugLog(string.format(
+            "  target %s @(%s,%s) dist=%s | pred: defRemain=%s atkRemain=%s dmgToDef=%s dmgToUs=%s",
+            S(tgt.kind), S(tgt.x), S(tgt.y), S(tgt.dist),
+            S(pred.defenderRemaining), S(pred.attackerRemaining),
+            S(pred.attackerDamage), S(pred.defenderDamage)))
+    else
+        DebugLog(string.format("  target %s @(%s,%s) dist=%s | pred: <none>",
+            S(tgt.kind), S(tgt.x), S(tgt.y), S(tgt.dist)))
+    end
+
     local action, fx, fy = DecideAction(pUnit, tgt, pred, mode)
+    DebugLog("  decision: " .. S(action)
+        .. ((fx ~= nil) and (" via (" .. S(fx) .. "," .. S(fy) .. ")") or ""))
 
     if action == "attack" then
         DoAttackAt(pUnit, tgt.x, tgt.y)
@@ -796,22 +881,30 @@ local function OnUnitMoveComplete(playerID, unitID)
     -- Clear first so a failed/again event can't double-fire.
     m_pendingShots[unitID] = nil
 
+    DebugLog(string.format("UnitMoveComplete: player=%s unit=%s -> pending shot at (%s,%s)",
+        S(playerID), S(unitID), S(shot.x), S(shot.y)))
+
     if playerID ~= Game.GetLocalPlayer() then return end
     local pPlayer = Players[playerID]
     if pPlayer == nil then return end
     local pUnits = pPlayer:GetUnits()
     if pUnits == nil then return end
     local pUnit = pUnits:FindID(unitID)
-    if pUnit == nil or pUnit:IsDead() then return end
+    if pUnit == nil or pUnit:IsDead() then
+        DebugLog("  pending shot aborted: unit gone/dead after move")
+        return
+    end
 
     -- Only fire if the target is now actually in range from the new position.
     local dist = PlotDistance(pUnit:GetX(), pUnit:GetY(), shot.x, shot.y)
     local range = pUnit:GetRange() or 1
     if dist >= 1 and dist <= range then
+        DebugLog(string.format("  firing on arrival from (%s,%s) dist=%s range=%s",
+            S(pUnit:GetX()), S(pUnit:GetY()), S(dist), S(range)))
         DoAttackAt(pUnit, shot.x, shot.y)
     else
-        Log(("pending shot skipped: unit %d out of range after move (dist=%d range=%d)")
-            :format(unitID, dist, range))
+        Log(("pending shot skipped: unit %s out of range after move (dist=%s range=%s)")
+            :format(S(unitID), S(dist), S(range)))
     end
 end
 
