@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Auto Battle control panel. A small window anchored top-right of the HUD.
-     Root is a bare Context (no Name attribute); the context ID is derived
-     from the filename by the engine (InGame.lua). The Lua below is bound to this
-     context; AutoBattle.lua includes AutoBattleLogic.lua for the brain. -->
-<Context>
-    <!-- Bind the panel logic to this context. -->
-    <Lua Name="AutoBattle" file="AutoBattle" />
+     The engine binds AutoBattle.lua to this context by filename match (the .xml
+     and .lua share a base name), when InGame.lua LoadNewContext()s it. There is
+     NO <Lua> element in Civ6 UI XML -- the old <Lua .../> child broke parsing
+     and the panel never instantiated. AutoBattle.lua include()s AutoBattleLogic. -->
+<Context Name="AutoBattle">
 
     <!-- Root container, top-right of the HUD. -->
     <Container ID="AutoBattlePanel" Anchor="R,T" Offset="8,140" Size="200,220" Hidden="0">
