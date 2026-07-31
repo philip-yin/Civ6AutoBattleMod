@@ -5,6 +5,9 @@
         <Replace Tag="LOC_AUTOBATTLE_TITLE" Language="en_US">
             <Text>Auto Battle</Text>
         </Replace>
+        <Replace Tag="LOC_AUTOBATTLE_MODE_LABEL" Language="en_US">
+            <Text>Mode:</Text>
+        </Replace>
         <Replace Tag="LOC_AUTOBATTLE_ENABLE" Language="en_US">
             <Text>Enable Auto Battle</Text>
         </Replace>
