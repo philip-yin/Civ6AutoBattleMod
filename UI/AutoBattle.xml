@@ -1,30 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Auto Battle control panel. Anchored top-LEFT of the HUD so it never overlaps
-     the right-side Production panel (350px wide, Anchor R,T) shown when a city is
-     selected. The engine binds AutoBattle.lua to this context by filename match.
-     Every Style/ColorSet name here is a real one from Civ6_Styles.xml; made-up
-     names render as nothing (that caused the earlier invisible frame/buttons). -->
+<!-- Auto Battle control panel. Anchored top-CENTER of the HUD, pushed down below
+     the ~29px top resource bar, so it clears BOTH the left tech/civic tree and the
+     right-side Production panel (350px wide, Anchor R,T) shown for a selected city.
+     The engine binds AutoBattle.lua to this context by filename match. Every
+     Style/ColorSet name here is a real one from Civ6_Styles.xml; made-up names
+     render as nothing (that caused the earlier invisible frame/buttons). -->
 <Context Name="AutoBattle">
 
-    <!-- Root container, top-left of the HUD (below the minimap-free left edge). -->
-    <Container ID="AutoBattlePanel" Anchor="L,T" Offset="8,140" Size="210,250" Hidden="0">
+    <!-- Root container, top-center of the HUD, below the top bar. -->
+    <Container ID="AutoBattlePanel" Anchor="C,T" Offset="0,140" Size="210,214" Hidden="0">
 
         <!-- Solid dark backing box so faint text has contrast, then a frame on top. -->
-        <Grid Size="210,250" Texture="Controls_SubContainer3" SliceCorner="20,20"
+        <Grid Size="210,214" Texture="Controls_SubContainer3" SliceCorner="20,20"
               SliceSize="1,1" Color="0,0,0,200" />
-        <GridBox Size="210,250" Style="DecoFrame" />
+        <GridBox Size="210,214" Style="DecoFrame" />
 
         <Stack StackGrowth="Bottom" Offset="16,16" WrapWidth="178" Padding="6">
 
             <!-- Title -->
             <Label ID="TitleLabel" String="LOC_AUTOBATTLE_TITLE" Font="TitleFont"
                    FontSize="18" ColorSet="BodyTextCool" Anchor="L,T" />
-
-            <!-- Enable checkbox. String lives ON the CheckBox (no child Label) so the
-                 whole control is clickable; a child Label was eating the clicks. -->
-            <CheckBox ID="EnableCheck" Style="WorldTrackerCheckBox" Anchor="L,T" Offset="0,6"
-                      String="LOC_AUTOBATTLE_ENABLE" TextOffset="-5" WrapWidth="150"
-                      ToolTip="LOC_AUTOBATTLE_ENABLE_TT" />
 
             <!-- Mode selection: three buttons -->
             <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="BodyTextCool" Anchor="L,T" Offset="0,8" />

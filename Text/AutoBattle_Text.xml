@@ -8,12 +8,6 @@
         <Replace Tag="LOC_AUTOBATTLE_MODE_LABEL" Language="en_US">
             <Text>Mode:</Text>
         </Replace>
-        <Replace Tag="LOC_AUTOBATTLE_ENABLE" Language="en_US">
-            <Text>Enable Auto Battle</Text>
-        </Replace>
-        <Replace Tag="LOC_AUTOBATTLE_ENABLE_TT" Language="en_US">
-            <Text>When enabled, your military and religious units act automatically according to the selected mode at the start of each of your turns. You can also press "Run Now" to act immediately.</Text>
-        </Replace>
         <Replace Tag="LOC_AUTOBATTLE_RUN_NOW" Language="en_US">
             <Text>Run Now</Text>
         </Replace>
@@ -41,9 +35,10 @@
             <Text>Only attack if it costs no health, unless the attack would kill the enemy (so melee rarely attacks). Never advance toward enemy units. Otherwise fortify.</Text>
         </Replace>
 
-        <!-- Status line -->
+        <!-- Status line. Tag kept as *_IDLE (internal key); displayed text is
+             "Ready" - the resting state, shown until a Run Now reports a result. -->
         <Replace Tag="LOC_AUTOBATTLE_STATUS_IDLE" Language="en_US">
-            <Text>Idle</Text>
+            <Text>Ready</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_STATUS_RAN" Language="en_US">
             <Text>Acted on {1_Count} unit(s)</Text>

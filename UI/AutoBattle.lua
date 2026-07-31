@@ -4,7 +4,7 @@
 --  Draws the control panel. The auto-battle brain lives in AutoBattleLogic.lua,
 --  which we include() into this SAME Lua VM, so we call its functions directly:
 --
---      AutoBattle_SetConfig(enabled, mode)   -- push panel state to the brain
+--      AutoBattle_SetConfig(mode)            -- push selected mode to the brain
 --      AutoBattle_RunPass() -> count         -- run one pass, returns units acted on
 --
 --  (Both files run in the InGame UI context, where CombatManager / UnitManager /
@@ -20,14 +20,14 @@ local MODE_AGGRESSIVE = 1
 local MODE_BALANCED   = 2
 local MODE_PASSIVE    = 3
 
-local m_enabled = false
-local m_mode    = MODE_BALANCED
+local m_mode = MODE_BALANCED
 
 -- ---------------------------------------------------------------------------
---  Push current config to the brain.
+--  Push current config (just the mode) to the brain. The mod is Run-Now-only:
+--  there is no auto-run at turn start, so no enable flag.
 -- ---------------------------------------------------------------------------
 local function PushConfig()
-    AutoBattle_SetConfig(m_enabled, m_mode)
+    AutoBattle_SetConfig(m_mode)
 end
 
 -- ---------------------------------------------------------------------------
@@ -49,11 +49,6 @@ end
 -- ---------------------------------------------------------------------------
 --  Handlers
 -- ---------------------------------------------------------------------------
-local function OnEnableToggled()
-    m_enabled = Controls.EnableCheck:IsSelected()
-    PushConfig()
-end
-
 local function OnRunNow()
     -- Make sure the brain has the latest config, run one pass, show the result.
     PushConfig()
@@ -85,7 +80,6 @@ local function Initialize()
     ContextPtr:SetInitHandler(OnInit)
 
     -- Button wiring
-    Controls.EnableCheck:RegisterCallback(Mouse.eLClick, OnEnableToggled)
     Controls.ModeAggressive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_AGGRESSIVE) end)
     Controls.ModeBalanced:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_BALANCED) end)
     Controls.ModePassive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_PASSIVE) end)
@@ -97,7 +91,6 @@ local function Initialize()
     end)
 
     -- Initialize visuals + push default config.
-    Controls.EnableCheck:SetSelected(m_enabled)
     RefreshModeButtons()
     PushConfig()
 

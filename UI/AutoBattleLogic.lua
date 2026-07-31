@@ -26,8 +26,7 @@ local MODE_AGGRESSIVE = 1
 local MODE_BALANCED   = 2
 local MODE_PASSIVE    = 3
 
-local m_isEnabled = false
-local m_mode      = MODE_BALANCED
+local m_mode = MODE_BALANCED
 
 -- Pending ranged shots: units that were told to move to a firing plot this pass
 -- and should fire once their move completes. Keyed by unit ID -> {x=, y=}.
@@ -1276,23 +1275,17 @@ end
 --  would only be needed to cross between separate Lua states).
 -- ---------------------------------------------------------------------------
 
--- Set enabled/mode from the panel.
-function AutoBattle_SetConfig(enabled, mode)
-    m_isEnabled = enabled and true or false
+-- Set the active mode from the panel. Run-Now-only: there is no enable flag and
+-- no auto-run at turn start, so this just records which mode Run Now will use.
+function AutoBattle_SetConfig(mode)
     if mode ~= nil then m_mode = mode end
-    Log(("config set: enabled=%s mode=%d"):format(tostring(m_isEnabled), m_mode))
+    Log(("config set: mode=%d"):format(m_mode))
 end
 
 -- Run one pass now. Returns the number of units acted on so the panel can
 -- update its status line from the return value.
 function AutoBattle_RunPass()
     return RunAutoBattlePass()
-end
-
--- Auto-run at the start of the local player's turn when enabled.
-local function OnLocalPlayerTurnBegin()
-    if not m_isEnabled then return end
-    RunAutoBattlePass()
 end
 
 -- Fire pending ranged shots once a move-to-firing-plot completes. The engine
@@ -1337,13 +1330,13 @@ local function ClearPendingShots()
     m_pendingShots = {}
 end
 
--- Register engine event hooks (available in the InGame UI context).
+-- Register engine event hooks (available in the InGame UI context). Run-Now-only:
+-- we hook turn begin ONLY to clear stale pending ranged shots, not to auto-run.
 if Events ~= nil and Events.LocalPlayerTurnBegin ~= nil then
     Events.LocalPlayerTurnBegin.Add(ClearPendingShots)
-    Events.LocalPlayerTurnBegin.Add(OnLocalPlayerTurnBegin)
-    Log("hooked LocalPlayerTurnBegin.")
+    Log("hooked LocalPlayerTurnBegin (clears pending shots; no auto-run).")
 else
-    Log("WARNING: Events.LocalPlayerTurnBegin unavailable; only Run Now will work.")
+    Log("WARNING: Events.LocalPlayerTurnBegin unavailable.")
 end
 
 if Events ~= nil and Events.UnitMoveComplete ~= nil then
