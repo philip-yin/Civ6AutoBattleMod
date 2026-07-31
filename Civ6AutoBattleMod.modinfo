@@ -8,12 +8,8 @@
         <AffectsSavedGames>0</AffectsSavedGames>
         <SupportsSinglePlayer>1</SupportsSinglePlayer>
         <SupportsHotSeat>0</SupportsHotSeat>
+        <CompatibleVersions>2.0</CompatibleVersions>
     </Properties>
-
-    <Dependencies>
-        <Mod id="1B28771A-C749-434B-9053-D1380C553DE9" title="LOC_EXPANSION1_MOD_TITLE" />
-        <Mod id="4873eb62-8ccc-4574-b784-dda455e74e68" title="LOC_EXPANSION2_MOD_TITLE" />
-    </Dependencies>
 
     <ActionCriteria>
         <Criteria id="always">
@@ -21,12 +17,15 @@
         </Criteria>
     </ActionCriteria>
 
-    <Components>
-        <!-- Localized text loads into the LOCALIZATION database via UpdateText.
-             NOT UpdateDatabase: that targets the gameplay DB, which has no
-             LocalizedText table -> Database.log "no such table: LocalizedText"
-             and the panel's labels never register. Every base mod uses UpdateText. -->
-        <UpdateText id="AutoBattle_Text">
+    <!-- ALL loading actions live inside <InGameActions>, matching every base DLC
+         that injects a HUD panel (Babylon, Ethiopia, BarbarianClans, Pirates,
+         Expansion1/2). Putting UpdateText/ImportFiles under <Components> instead
+         is what kept AutoBattle_UI from being registered. -->
+    <InGameActions>
+        <!-- Localized text -> LOCALIZATION database via UpdateText. NOT
+             UpdateDatabase (that hits the gameplay DB, which has no LocalizedText
+             table -> Database.log "no such table: LocalizedText"). -->
+        <UpdateText id="AutoBattle_Text" criteria="always">
             <Properties>
                 <LoadOrder>10</LoadOrder>
             </Properties>
@@ -34,9 +33,7 @@
                 <File>Text/AutoBattle_Text.xml</File>
             </Items>
         </UpdateText>
-    </Components>
 
-    <InGameActions>
         <!-- Import both Lua files + the panel XML into the InGame UI context so
              they share one Lua VM. AutoBattle.lua does include("AutoBattleLogic")
              to call the brain directly. The brain lives in the UI context because
