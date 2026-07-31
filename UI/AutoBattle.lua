@@ -67,8 +67,23 @@ end
 
 -- ---------------------------------------------------------------------------
 --  Init
+--
+--  CRITICAL: panels added via <AddUserInterfaces> are loaded HIDDEN by the base
+--  game (InGame.lua LoadNewContext with isHidden=true) and are never un-hidden
+--  automatically. So the panel MUST show itself, via ContextPtr:SetHide(false)
+--  in the init handler -- otherwise it loads but stays invisible.
 -- ---------------------------------------------------------------------------
+
+-- Fires when the context is attached to the HUD.
+local function OnInit(isReload)
+    ContextPtr:SetHide(false)   -- REQUIRED: mod contexts load hidden
+    print("[AutoBattle-UI] Panel shown (OnInit).")
+end
+
 local function Initialize()
+    -- Show the panel once the context is attached.
+    ContextPtr:SetInitHandler(OnInit)
+
     -- Button wiring
     Controls.EnableCheck:RegisterCallback(Mouse.eLClick, OnEnableToggled)
     Controls.ModeAggressive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_AGGRESSIVE) end)
@@ -85,6 +100,10 @@ local function Initialize()
     Controls.EnableCheck:SetSelected(m_enabled)
     RefreshModeButtons()
     PushConfig()
+
+    -- Fallback: also un-hide directly, in case the init handler timing differs
+    -- across builds (harmless if OnInit also fires).
+    ContextPtr:SetHide(false)
 
     print("[AutoBattle-UI] Panel initialized.")
 end
