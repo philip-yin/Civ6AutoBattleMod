@@ -29,7 +29,7 @@
             <Text>Always attack unless the combat preview shows the unit would die. Otherwise fortify and heal. Units advance to minimize distance to the closest enemy.</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_MODE_BALANCED" Language="en_US">
-            <Text>In-Between</Text>
+            <Text>Balanced</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_MODE_BALANCED_TT" Language="en_US">
             <Text>Fortify if below 50% health, unless an attack would kill the enemy. Only units above 50% health advance toward the enemy. Ranged units move to maximum range then attack when possible.</Text>

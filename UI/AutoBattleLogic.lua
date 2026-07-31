@@ -1020,6 +1020,14 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
 
     if #targets == 0 then
         if fortifyIfNoTarget then
+            -- No enemy in view. In Aggressive/Balanced, keep the map opening up:
+            -- move toward the fog edge (reuses the missionary explorer). Passive
+            -- holds position. If exploring isn't possible (nowhere to go), hold.
+            if (mode == MODE_AGGRESSIVE or mode == MODE_BALANCED)
+               and ExecuteExplore(pUnit, selfPlayerId) then
+                DebugLog("  no visible enemy target -> explore")
+                return "acted"
+            end
             DebugLog("  no visible enemy target -> fortify")
             DoHold(pUnit)
             return "acted"

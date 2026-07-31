@@ -1,61 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Auto Battle control panel. A small window anchored top-right of the HUD.
-     The engine binds AutoBattle.lua to this context by filename match (the .xml
-     and .lua share a base name), when InGame.lua LoadNewContext()s it. Note:
-     Civ6 UI XML has no Lua element; the old Lua child tag broke parsing so the
-     panel never instantiated. AutoBattle.lua include()s AutoBattleLogic.
-
-     STYLES: every Style/ColorSet name here must exist in the game's UI registry
-     (Civ6_Styles.xml). Made-up names (Frame_ThinFullPadding, ControlButton,
-     Beautiful_Black) render as nothing -> invisible frame/buttons. The names
-     below are real, in-use styles: DecoFrame, ButtonControl, CheckBoxControl,
-     ButtonConfirm, and the Beige_Black / BodyTextCool colorsets. -->
+<!-- Auto Battle control panel. Anchored top-LEFT of the HUD so it never overlaps
+     the right-side Production panel (350px wide, Anchor R,T) shown when a city is
+     selected. The engine binds AutoBattle.lua to this context by filename match.
+     Every Style/ColorSet name here is a real one from Civ6_Styles.xml; made-up
+     names render as nothing (that caused the earlier invisible frame/buttons). -->
 <Context Name="AutoBattle">
 
-    <!-- Root container, top-right of the HUD. -->
-    <Container ID="AutoBattlePanel" Anchor="R,T" Offset="8,140" Size="200,240" Hidden="0">
-        <!-- Background frame. DecoFrame is a real 9-slice frame texture. -->
-        <GridBox Size="200,240" Style="DecoFrame" />
+    <!-- Root container, top-left of the HUD (below the minimap-free left edge). -->
+    <Container ID="AutoBattlePanel" Anchor="L,T" Offset="8,140" Size="210,250" Hidden="0">
 
-        <Stack StackGrowth="Bottom" Offset="14,14" WrapWidth="172" Padding="4">
+        <!-- Solid dark backing box so faint text has contrast, then a frame on top. -->
+        <Grid Size="210,250" Texture="Controls_SubContainer3" SliceCorner="20,20"
+              SliceSize="1,1" Color="0,0,0,200" />
+        <GridBox Size="210,250" Style="DecoFrame" />
+
+        <Stack StackGrowth="Bottom" Offset="16,16" WrapWidth="178" Padding="6">
 
             <!-- Title -->
             <Label ID="TitleLabel" String="LOC_AUTOBATTLE_TITLE" Font="TitleFont"
-                   FontSize="18" ColorSet="Beige_Black" Anchor="L,T" />
+                   FontSize="18" ColorSet="BodyTextCool" Anchor="L,T" />
 
-            <!-- Enable checkbox -->
-            <CheckBox ID="EnableCheck" Style="CheckBoxControl" Size="172,28" Anchor="L,T" Offset="0,4">
-                <Label Anchor="L,C" Offset="30,0" String="LOC_AUTOBATTLE_ENABLE"
-                       FontSize="14" ColorSet="BodyTextCool" ToolTip="LOC_AUTOBATTLE_ENABLE_TT" />
-            </CheckBox>
+            <!-- Enable checkbox. String lives ON the CheckBox (no child Label) so the
+                 whole control is clickable; a child Label was eating the clicks. -->
+            <CheckBox ID="EnableCheck" Style="WorldTrackerCheckBox" Anchor="L,T" Offset="0,6"
+                      String="LOC_AUTOBATTLE_ENABLE" TextOffset="-5" WrapWidth="150"
+                      ToolTip="LOC_AUTOBATTLE_ENABLE_TT" />
 
-            <!-- Mode selection: three radio-style buttons -->
-            <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="Beige_Black" Anchor="L,T" Offset="0,6" />
+            <!-- Mode selection: three buttons -->
+            <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="BodyTextCool" Anchor="L,T" Offset="0,8" />
 
-            <GridButton ID="ModeAggressive" Size="172,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+            <GridButton ID="ModeAggressive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
                         ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
                 <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" ColorSet="ButtonCS" />
             </GridButton>
 
-            <GridButton ID="ModeBalanced" Size="172,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+            <GridButton ID="ModeBalanced" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
                         ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
                 <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" ColorSet="ButtonCS" />
             </GridButton>
 
-            <GridButton ID="ModePassive" Size="172,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+            <GridButton ID="ModePassive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
                         ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
                 <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" ColorSet="ButtonCS" />
             </GridButton>
 
             <!-- Run Now -->
-            <GridButton ID="RunNowButton" Size="172,36" Style="ButtonConfirm" Anchor="L,T" Offset="0,8"
+            <GridButton ID="RunNowButton" Size="178,36" Style="ButtonConfirm" Anchor="L,T" Offset="0,10"
                         ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
                 <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="14" ColorSet="ButtonCS" />
             </GridButton>
 
             <!-- Status line -->
             <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
-                   ColorSet="Beige_Black" Anchor="L,T" Offset="0,8" />
+                   ColorSet="BodyTextCool" Anchor="L,T" Offset="0,10" />
 
         </Stack>
     </Container>
