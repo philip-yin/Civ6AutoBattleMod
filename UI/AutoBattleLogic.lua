@@ -484,8 +484,6 @@ local function FindExplorePlot(pUnit, selfPlayerId)
     -- one not-yet-revealed neighbor is ideal; otherwise take the plot furthest
     -- from our current position (push outward).
     local ux, uy = pUnit:GetX(), pUnit:GetY()
-    local bestEdgeX, bestEdgeY = nil, nil
-    local bestFarX, bestFarY, bestFarDist = nil, nil, -1
 
     local function IsRevealed(x, y)
         if vis == nil then return true end
@@ -499,24 +497,50 @@ local function FindExplorePlot(pUnit, selfPlayerId)
         return r == true
     end
 
+    -- Count how many of a plot's 6 hex neighbors are still fogged. More fogged
+    -- neighbors = a plot deeper on the frontier that reveals more when reached.
+    local function UnrevealedNeighborCount(x, y)
+        local n = 0
+        -- Even/odd-row hex neighbor offsets (Civ6 uses offset coords).
+        local odd = (y % 2) ~= 0
+        local offs = odd
+            and { {1,0},{-1,0},{0,1},{1,1},{0,-1},{1,-1} }
+            or  { {1,0},{-1,0},{-1,1},{0,1},{-1,-1},{0,-1} }
+        for _, o in ipairs(offs) do
+            if not IsRevealed(x + o[1], y + o[2]) then n = n + 1 end
+        end
+        return n
+    end
+
+    -- Pick the FURTHEST reachable plot that still borders fog. Rationale:
+    -- exploration should commit to a heading and cover ground -- reach the edge of
+    -- this turn's movement, out where the frontier is, and reveal new tiles there.
+    -- Ranking by fog-COUNT instead (densest pocket) makes the unit swing toward
+    -- whichever direction has the most fog each turn and oscillate ("patrol") near
+    -- home; ranking by CLOSEST fog reveals a one-tile pocket and stops, wasting the
+    -- rest of the move. Distance-primary among fog-bordering tiles avoids both:
+    -- it uses full movement and keeps pushing outward. Fog-count is only a tiebreak
+    -- between equidistant frontier tiles (open toward the bigger unknown).
+    local bestX, bestY = nil, nil
+    local bestDist, bestFog = -1, -1
+    -- Furthest-from-start fallback used only if NOTHING reachable touches fog.
+    local farX, farY, farDist = nil, nil, -1
+
     for _, p in ipairs(reach) do
-        -- furthest-from-start fallback
         local d = PlotDistance(ux, uy, p.x, p.y)
-        if d > bestFarDist then bestFarDist = d; bestFarX, bestFarY = p.x, p.y end
-        -- fog-edge preference: any unrevealed neighbor?
-        if bestEdgeX == nil then
-            local neighbors = { {p.x+1,p.y},{p.x-1,p.y},{p.x,p.y+1},{p.x,p.y-1} }
-            for _, n in ipairs(neighbors) do
-                if not IsRevealed(n[1], n[2]) then
-                    bestEdgeX, bestEdgeY = p.x, p.y
-                    break
-                end
+        if d > farDist then farDist = d; farX, farY = p.x, p.y end
+
+        local fog = UnrevealedNeighborCount(p.x, p.y)
+        if fog > 0 then
+            if d > bestDist or (d == bestDist and fog > bestFog) then
+                bestDist, bestFog = d, fog
+                bestX, bestY = p.x, p.y
             end
         end
     end
 
-    if bestEdgeX ~= nil then return bestEdgeX, bestEdgeY end
-    return bestFarX, bestFarY
+    if bestX ~= nil then return bestX, bestY end
+    return farX, farY
 end
 
 -- ---------------------------------------------------------------------------
@@ -798,7 +822,16 @@ function DoMoveTo(pUnit, x, y)  -- assigns to the forward-declared local
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
     if UnitOperationMoveModifiers ~= nil then
-        params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.NONE
+        -- MOVE_IGNORE_UNEXPLORED_DESTINATION: let the engine path toward a fogged
+        -- destination instead of clamping the move to the last explored tile. Without
+        -- it, advancing/exploring toward unrevealed territory stops short and leaves
+        -- movement unused (a 4-move unit only steps 1-2 tiles). Fall back to NONE if
+        -- the modifier enum isn't present on this build.
+        local mods = UnitOperationMoveModifiers.NONE
+        if UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION ~= nil then
+            mods = UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION
+        end
+        params[UnitOperationTypes.PARAM_MODIFIERS] = mods
     end
     return TryOperation("MoveTo", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
