@@ -74,25 +74,38 @@ included by default.
 ## Install (macOS)
 
 1. Quit Civilization VI if it's running.
-2. Copy the whole `Civ6AutoBattleMod` folder into your Mods directory:
+2. Copy the whole `Civ6AutoBattleMod` folder into your Mods directory.
+
+   The exact path depends on the build. The modern Epic/Aspyr build nests the
+   folder and keeps its live data (`Mods`, `Saves`, `ModUserData`) under an
+   **inner** folder of the same name:
+
+   ```
+   ~/Library/Application Support/Sid Meier's Civilization VI/Sid Meier's Civilization VI/Mods/
+   ```
+
+   Older Steam/App Store builds use the single (non-nested) path:
 
    ```
    ~/Library/Application Support/Sid Meier's Civilization VI/Mods/
    ```
 
-   You can do it from Terminal:
+   If unsure which is live, find the one whose `Mods`/`Saves` were modified
+   recently:
 
    ```sh
-   cp -R "/Users/jyin1/Desktop/VI/Civ6AutoBattleMod" \
-     "$HOME/Library/Application Support/Sid Meier's Civilization VI/Mods/"
+   mdfind -name "Mods" | grep -i "Civilization VI"
+   ```
+
+   Then copy (adjust the destination to whichever Mods dir is live):
+
+   ```sh
+   cp -R "/Users/jyin1/Desktop/Personal/VI/Civ6AutoBattleMod" \
+     "$HOME/Library/Application Support/Sid Meier's Civilization VI/Sid Meier's Civilization VI/Mods/"
    ```
 
 3. Launch Civ VI → **Additional Content** (main menu) → **Mods** → enable
    **Auto Battle** → **Back** (it will reload) → start or load a game.
-
-> The mod declares dependencies on the two expansions (Rise & Fall, Gathering
-> Storm). If you don't own them, open `Civ6AutoBattleMod.modinfo` and delete the
-> two `<Mod .../>` lines inside `<Dependencies>`.
 
 ## Use
 
@@ -108,28 +121,31 @@ Civ6's Lua combat/operation API names shift slightly between game patches. This
 mod is written defensively: every risky call is wrapped and logged rather than
 crashing. If units don't act the way you expect, read the log.
 
-**Enable logging** — launch Civ6 once (this creates the file), quit, then in
-`~/Library/Application Support/Sid Meier's Civilization VI/AppOptions.txt`
-set:
+**Which logs you get depends on the build:**
 
-```
-LoggingEnabled 1
-```
+- **`Modding.log`** is written by every build and needs no flag. It records
+  mod discovery, enable state, and component load (text/import/UI). This is the
+  first place to look for load-time problems — a rejected text file or a mod
+  that never enabled shows up here. Find the live one (the nested inner folder
+  on the Aspyr/Epic build):
 
-(`LoggingEnabled` is the flag that produces `Lua.log`. `EnableTuner 1` is
-optional — it enables the FireTuner debugger, not the log file.)
+  ```sh
+  mdfind -name "Modding.log" | grep -i "Civilization VI"
+  ```
 
-**Log file location:**
+- **`Lua.log`** (the per-unit `[AutoBattle]` runtime trace below) is produced
+  only when Lua logging is enabled. On older **Steam/App Store** builds, set
+  `LoggingEnabled 1` in `AppOptions.txt` and it appears under `.../Logs/Lua.log`.
+  The modern **Epic/Aspyr** build has no `LoggingEnabled` key in `AppOptions.txt`
+  and does not write `Lua.log` to that user folder — don't chase it there. If you
+  need runtime tracing on that build, search for it after a run:
 
-```
-~/Library/Application Support/Sid Meier's Civilization VI/Logs/Lua.log
-```
+  ```sh
+  mdfind -name "Lua.log"
+  ```
 
-All lines are prefixed `[AutoBattle]`, so filter with:
-
-```sh
-tail -f "$HOME/Library/Application Support/Sid Meier's Civilization VI/Logs/Lua.log" | grep AutoBattle
-```
+Runtime lines are prefixed `[AutoBattle]`; if you locate a `Lua.log`, filter with
+`grep AutoBattle`.
 
 ### Two log levels
 
