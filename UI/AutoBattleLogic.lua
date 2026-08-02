@@ -1252,7 +1252,63 @@ local function ProcessApostle(pUnit, selfPlayerId, mode)
     return true
 end
 
-local function ProcessUnit(pUnit, selfPlayerId, mode)
+-- ---------------------------------------------------------------------------
+--  Ranged/siege/air executor (the "Run Ranged" button). Single fixed behavior,
+--  NO mode and NO advance-toward-enemy: if the unit can shoot in place, shoot;
+--  else if it can move to an EMPTY firing tile and shoot, do that; otherwise
+--  WAIT (hold). Never walks toward the enemy without a shot -- that's the melee
+--  job. This is why ranged has its own button: mixing it into the mode pipeline
+--  made ranged either advance pointlessly or freeze. No safety/HP gate: if a
+--  shot is available it is taken.
+-- ---------------------------------------------------------------------------
+local function ExecuteRanged(pUnit, selfPlayerId)
+    local targets = GatherEnemyTargets(pUnit, selfPlayerId)
+    if #targets == 0 then
+        DebugLog("  ranged: no visible enemy -> wait")
+        DoHold(pUnit)
+        return false   -- nothing to shoot; didn't really act
+    end
+
+    local tgt = ChooseBestTarget(pUnit, targets)
+    if tgt == nil then
+        DebugLog("  ranged: no predictable target -> wait")
+        DoHold(pUnit)
+        return false
+    end
+
+    -- 1) Shoot in place if the target is already in range.
+    if CanAttackNow(pUnit, tgt) then
+        DebugLog(string.format("  ranged: fire in place at (%s,%s)", S(tgt.x), S(tgt.y)))
+        DoAttackAt(pUnit, tgt.x, tgt.y)
+        return true
+    end
+
+    -- 2) Else move to an EMPTY firing tile (FindMaxRangeFiringPlot already skips
+    --    tiles held by a friendly) and fire once the move completes.
+    local fx, fy = FindMaxRangeFiringPlot(pUnit, tgt)
+    if fx ~= nil then
+        DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
+            S(fx), S(fy), S(tgt.x), S(tgt.y)))
+        m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
+        DoMoveTo(pUnit, fx, fy)
+        return true
+    end
+
+    -- 3) No shot and no clear firing move -> wait.
+    DebugLog("  ranged: cannot shoot or reposition cleanly -> wait")
+    DoHold(pUnit)
+    return false
+end
+
+-- True if a unit belongs to the "Run Ranged" button (fires at distance): ranged,
+-- siege, or air. Everything else (melee/cav/religious/support) is "Run Now".
+local function IsRangedFamily(pUnit)
+    return IsRanged(pUnit) or IsAir(pUnit)   -- IsRanged already covers siege
+end
+
+-- Dispatch ONE unit for the melee pass ("Run Now"). Ranged/siege/air are handled
+-- by the ranged pass instead, so they are skipped here.
+local function ProcessMeleeUnit(pUnit, selfPlayerId, mode)
     DebugLog("processing " .. DescribeUnit(pUnit))
 
     -- Missionaries/Gurus can't fight -> convert-and-explore behavior.
@@ -1265,15 +1321,17 @@ local function ProcessUnit(pUnit, selfPlayerId, mode)
         return ProcessApostle(pUnit, selfPlayerId, mode)
     end
 
-    -- All other combat units: standard combat pipeline (fortify if no target).
+    -- Melee / cavalry / religious combatants: standard mode pipeline.
     return (ExecuteCombat(pUnit, selfPlayerId, mode, true) == "acted")
 end
 
 -- ---------------------------------------------------------------------------
---  Main pass over all eligible units of the local player.
+--  Shared pass over the local player's units. `want(unit)` selects which family
+--  this pass handles; `act(unit, playerId)` runs one unit; `label` is for logs.
+--  The two buttons call this with different filters/processors.
 -- ---------------------------------------------------------------------------
 
-local function RunAutoBattlePass()
+local function RunPassFiltered(label, want, act)
     -- Don't query/order the game core while it is busy (resolving combat, a
     -- move, or a turn transition) -- predictions can come back stale and
     -- operations may be dropped. Mirrors the real UI's guard
@@ -1301,11 +1359,12 @@ local function RunAutoBattlePass()
     if pUnits == nil then return 0 end
 
     local processed = 0
-    -- Snapshot units first, since operations can mutate the collection.
+    -- Snapshot units first, since operations can mutate the collection. `want`
+    -- filters which family this pass handles; `act` runs one unit.
     local unitList = {}
     local skipped = 0
     for _, u in pUnits:Members() do
-        if IsEligibleUnit(u) then
+        if IsEligibleUnit(u) and want(u) then
             if CanStillAct(u) then
                 table.insert(unitList, { unit = u, priority = GetExecutionPriority(u) })
             else
@@ -1314,27 +1373,40 @@ local function RunAutoBattlePass()
         end
     end
 
-    -- Tactical execution order: melee (1) -> ranged (2) -> siege (3) ->
-    -- support (4). Stable sort by priority so melee open the fight and take
-    -- tiles before ranged fire into softened targets, siege bombard, and
-    -- support reposition last.
+    -- Deterministic order within the pass (siege after pure ranged, etc., then
+    -- by unit ID). The melee/ranged split is now by BUTTON, not by this sort.
     table.sort(unitList, function(a, b)
         if a.priority ~= b.priority then
             return a.priority < b.priority
         end
-        -- Tie-break by unit ID for deterministic ordering within a bucket.
         return a.unit:GetID() < b.unit:GetID()
     end)
 
     for _, entry in ipairs(unitList) do
         local pUnit = entry.unit
-        local ok = Try("ProcessUnit", function() return ProcessUnit(pUnit, selfPlayerId, m_mode) end)
+        local ok = Try("ProcessOne", function() return act(pUnit, selfPlayerId) end)
         if ok then processed = processed + 1 end
     end
 
-    Log(("pass complete: acted on %d unit(s), skipped %d already-used, mode=%d")
-        :format(processed, skipped, m_mode))
+    Log(("%s pass: acted on %d unit(s), skipped %d already-used")
+        :format(label, processed, skipped))
     return processed
+end
+
+-- Public: run the MELEE pass ("Run Now"). Melee/cav/religious + apostle/missionary;
+-- ranged/siege/air are excluded (handled by Run Ranged). Uses the selected mode.
+function AutoBattle_RunMelee()
+    return RunPassFiltered("melee",
+        function(u) return not IsRangedFamily(u) end,
+        function(u, pid) return ProcessMeleeUnit(u, pid, m_mode) end)
+end
+
+-- Public: run the RANGED pass ("Run Ranged"). Ranged/siege/air only. Fixed
+-- shoot-or-wait behavior, no mode.
+function AutoBattle_RunRanged()
+    return RunPassFiltered("ranged",
+        function(u) return IsRangedFamily(u) end,
+        function(u, pid) return ExecuteRanged(u, pid) end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1350,11 +1422,9 @@ function AutoBattle_SetConfig(mode)
     Log(("config set: mode=%d"):format(m_mode))
 end
 
--- Run one pass now. Returns the number of units acted on so the panel can
--- update its status line from the return value.
-function AutoBattle_RunPass()
-    return RunAutoBattlePass()
-end
+-- AutoBattle_RunMelee() and AutoBattle_RunRanged() (defined above) are the two
+-- public run entry points the panel calls; each returns the number of units
+-- acted on so the panel can update its status line.
 
 -- Fire pending ranged shots once a move-to-firing-plot completes. The engine
 -- reports (playerID, unitID, ...) for this event across builds; we only act on

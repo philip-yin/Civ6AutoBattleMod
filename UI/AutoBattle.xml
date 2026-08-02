@@ -10,7 +10,7 @@
     <!-- Offset Y (230) lifts the whole panel above the ~215px End Turn cluster;
          Offset X (10) nudges it off the very edge. Height is fixed (bottom-anchor
          keeps the bottom put), so minimize only hides the body. -->
-    <Container ID="AutoBattlePanel" Anchor="R,B" Offset="10,230" Size="210,242" Hidden="0">
+    <Container ID="AutoBattlePanel" Anchor="R,B" Offset="10,230" Size="210,274" Hidden="0">
 
         <!-- ===== Title bar (always visible, at the TOP of the panel) ===== -->
         <Container ID="TitleBar" Size="210,38" Anchor="L,T">
@@ -27,36 +27,50 @@
         </Container>
 
         <!-- ===== Collapsible body (sits just below the 38px title bar) ===== -->
-        <Container ID="BodyContainer" Anchor="L,T" Offset="0,36" Size="210,206" Hidden="0">
+        <Container ID="BodyContainer" Anchor="L,T" Offset="0,36" Size="210,238" Hidden="0">
 
             <!-- Solid dark backing box, then a frame on top. -->
-            <Grid Size="210,206" Texture="Controls_SubContainer3" SliceCorner="20,20"
+            <Grid Size="210,238" Texture="Controls_SubContainer3" SliceCorner="20,20"
                   SliceSize="1,1" Color="0,0,0,200" />
-            <GridBox Size="210,206" Style="DecoFrame" />
+            <GridBox Size="210,238" Style="DecoFrame" />
 
-            <Stack StackGrowth="Bottom" Offset="16,12" WrapWidth="178" Padding="6">
+            <Stack StackGrowth="Bottom" Offset="16,12" WrapWidth="178" Padding="8">
 
-                <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="BodyTextCool" Anchor="L,T" />
+                <!-- ===== Melee config group: a bordered, labeled box so it's
+                     visually clear the three modes apply ONLY to melee. ===== -->
+                <Grid ID="MeleeModeBox" Size="178,142" Style="SquareFrameGrey" Anchor="L,T">
+                    <!-- Header tab on the box border. -->
+                    <Label String="LOC_AUTOBATTLE_MELEE_MODE_LABEL" FontSize="12" ColorSet="BodyTextCool"
+                           Anchor="L,T" Offset="8,4" />
 
-                <GridButton ID="ModeAggressive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                            ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
-                    <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" ColorSet="ButtonCS" />
-                </GridButton>
+                    <Stack StackGrowth="Bottom" Anchor="L,T" Offset="8,24" Padding="4">
+                        <GridButton ID="ModeAggressive" Size="162,30" Style="ButtonControl" Anchor="L,T"
+                                    ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
+                            <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" ColorSet="ButtonCS" />
+                        </GridButton>
+                        <GridButton ID="ModeBalanced" Size="162,30" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+                                    ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
+                            <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" ColorSet="ButtonCS" />
+                        </GridButton>
+                        <GridButton ID="ModePassive" Size="162,30" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+                                    ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
+                            <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" ColorSet="ButtonCS" />
+                        </GridButton>
+                    </Stack>
+                </Grid>
 
-                <GridButton ID="ModeBalanced" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                            ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
-                    <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" ColorSet="ButtonCS" />
-                </GridButton>
-
-                <GridButton ID="ModePassive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                            ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
-                    <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" ColorSet="ButtonCS" />
-                </GridButton>
-
-                <GridButton ID="RunNowButton" Size="178,36" Style="ButtonConfirm" Anchor="L,T" Offset="0,10"
-                            ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
-                    <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="14" ColorSet="ButtonCS" />
-                </GridButton>
+                <!-- ===== Run buttons, side by side. Melee uses the box above;
+                     Ranged is independent (no mode). ===== -->
+                <Stack StackGrowth="Right" Anchor="L,T" Offset="0,10" Padding="6">
+                    <GridButton ID="RunNowButton" Size="86,36" Style="ButtonConfirm" Anchor="L,T"
+                                ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
+                        <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="13" ColorSet="ButtonCS" />
+                    </GridButton>
+                    <GridButton ID="RunRangedButton" Size="86,36" Style="ButtonConfirm" Anchor="L,T"
+                                ToolTip="LOC_AUTOBATTLE_RUN_RANGED_TT">
+                        <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_RANGED" FontSize="13" ColorSet="ButtonCS" />
+                    </GridButton>
+                </Stack>
 
                 <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
                        ColorSet="BodyTextCool" Anchor="L,T" Offset="0,10" />

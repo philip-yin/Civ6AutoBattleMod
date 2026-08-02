@@ -5,17 +5,23 @@
         <Replace Tag="LOC_AUTOBATTLE_TITLE" Language="en_US">
             <Text>Auto Battle</Text>
         </Replace>
-        <Replace Tag="LOC_AUTOBATTLE_MODE_LABEL" Language="en_US">
-            <Text>Mode:</Text>
+        <Replace Tag="LOC_AUTOBATTLE_MELEE_MODE_LABEL" Language="en_US">
+            <Text>Melee Mode:</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_MINIMIZE_TT" Language="en_US">
             <Text>Minimize / expand this panel.</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_RUN_NOW" Language="en_US">
-            <Text>Run Now</Text>
+            <Text>Run Melee</Text>
         </Replace>
         <Replace Tag="LOC_AUTOBATTLE_RUN_NOW_TT" Language="en_US">
-            <Text>Immediately run one auto-battle pass over all eligible units using the selected mode.</Text>
+            <Text>Run one pass over your MELEE / cavalry / religious units using the selected Melee Mode. Each click is one round (melee step 1 tile or attack adjacent).</Text>
+        </Replace>
+        <Replace Tag="LOC_AUTOBATTLE_RUN_RANGED" Language="en_US">
+            <Text>Run Ranged</Text>
+        </Replace>
+        <Replace Tag="LOC_AUTOBATTLE_RUN_RANGED_TT" Language="en_US">
+            <Text>Run one pass over your RANGED / siege / air units: if a unit can shoot in place or move to an empty tile and shoot (without displacing a friendly), it does; otherwise it waits. No mode.</Text>
         </Replace>
 
         <!-- Modes -->

@@ -49,15 +49,24 @@ end
 -- ---------------------------------------------------------------------------
 --  Handlers
 -- ---------------------------------------------------------------------------
-local function OnRunNow()
-    -- Make sure the brain has the latest config, run one pass, show the result.
-    PushConfig()
-    local count = AutoBattle_RunPass() or 0
-    if count > 0 then
+-- Update the status line from a pass result (units acted on).
+local function ShowResult(count)
+    if (count or 0) > 0 then
         Controls.StatusLabel:LocalizeAndSetText("LOC_AUTOBATTLE_STATUS_RAN", count)
     else
         Controls.StatusLabel:LocalizeAndSetText("LOC_AUTOBATTLE_STATUS_IDLE")
     end
+end
+
+-- "Run Now": melee/cav/religious units, per the selected Melee Mode.
+local function OnRunMelee()
+    PushConfig()   -- push current mode to the brain
+    ShowResult(AutoBattle_RunMelee() or 0)
+end
+
+-- "Run Ranged": ranged/siege/air units. Fixed shoot-or-wait behavior (no mode).
+local function OnRunRanged()
+    ShowResult(AutoBattle_RunRanged() or 0)
 end
 
 -- ---------------------------------------------------------------------------
@@ -126,11 +135,15 @@ local function Initialize()
     Controls.ModeAggressive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_AGGRESSIVE) end)
     Controls.ModeBalanced:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_BALANCED) end)
     Controls.ModePassive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_PASSIVE) end)
-    Controls.RunNowButton:RegisterCallback(Mouse.eLClick, OnRunNow)
+    Controls.RunNowButton:RegisterCallback(Mouse.eLClick, OnRunMelee)
+    Controls.RunRangedButton:RegisterCallback(Mouse.eLClick, OnRunRanged)
     Controls.MinimizeButton:RegisterCallback(Mouse.eLClick, OnToggleMinimize)
 
     -- Sound feedback (optional, standard UI click sounds)
     Controls.RunNowButton:RegisterCallback(Mouse.eMouseEnter, function()
+        UI.PlaySound("Main_Menu_Mouse_Over")
+    end)
+    Controls.RunRangedButton:RegisterCallback(Mouse.eMouseEnter, function()
         UI.PlaySound("Main_Menu_Mouse_Over")
     end)
 
