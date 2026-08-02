@@ -1261,6 +1261,25 @@ end
 --  made ranged either advance pointlessly or freeze. No safety/HP gate: if a
 --  shot is available it is taken.
 -- ---------------------------------------------------------------------------
+-- Pick a target for a ranged unit WITHOUT requiring a combat prediction. The
+-- ranged button is "always shoot if in range" (no safety gate), so a failed
+-- SimulateAttackVersus must NOT stop the unit from firing -- which is exactly
+-- the bug in ChooseBestTarget (it silently drops any target with no prediction).
+-- Preference: a target already in range (closest wins); otherwise the nearest
+-- target overall (so we can try to reposition into range).
+local function ChooseRangedTarget(pUnit, targets)
+    local bestInRange, bestInRangeDist = nil, math.huge
+    local bestAny,     bestAnyDist     = nil, math.huge
+    for _, t in ipairs(targets) do
+        local d = t.dist or math.huge
+        if d < bestAnyDist then bestAnyDist = d; bestAny = t end
+        if CanAttackNow(pUnit, t) and d < bestInRangeDist then
+            bestInRangeDist = d; bestInRange = t
+        end
+    end
+    return bestInRange or bestAny
+end
+
 local function ExecuteRanged(pUnit, selfPlayerId)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
     if #targets == 0 then
@@ -1269,16 +1288,18 @@ local function ExecuteRanged(pUnit, selfPlayerId)
         return false   -- nothing to shoot; didn't really act
     end
 
-    local tgt = ChooseBestTarget(pUnit, targets)
+    -- Prediction-independent target choice (see ChooseRangedTarget). Never gate
+    -- firing on a combat prediction succeeding.
+    local tgt = ChooseRangedTarget(pUnit, targets)
     if tgt == nil then
-        DebugLog("  ranged: no predictable target -> wait")
+        DebugLog("  ranged: no target -> wait")
         DoHold(pUnit)
         return false
     end
 
     -- 1) Shoot in place if the target is already in range.
     if CanAttackNow(pUnit, tgt) then
-        DebugLog(string.format("  ranged: fire in place at (%s,%s)", S(tgt.x), S(tgt.y)))
+        DebugLog(string.format("  ranged: fire in place at (%s,%s) dist=%s", S(tgt.x), S(tgt.y), S(tgt.dist)))
         DoAttackAt(pUnit, tgt.x, tgt.y)
         return true
     end
