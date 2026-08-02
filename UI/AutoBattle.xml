@@ -1,54 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Auto Battle control panel. Anchored top-CENTER of the HUD, pushed down below
-     the ~29px top resource bar, so it clears BOTH the left tech/civic tree and the
-     right-side Production panel (350px wide, Anchor R,T) shown for a selected city.
-     The engine binds AutoBattle.lua to this context by filename match. Every
-     Style/ColorSet name here is a real one from Civ6_Styles.xml; made-up names
-     render as nothing (that caused the earlier invisible frame/buttons). -->
+<!-- Auto Battle control panel. Docked BOTTOM-RIGHT, sitting just ABOVE the End
+     Turn button (ActionPanel, R,B, ~215px tall). The root is bottom-anchored so
+     the panel's bottom edge stays pinned above End Turn; the title bar is at the
+     TOP of the root, so it holds its position when the body is minimized (the body
+     just hides, top stays put). Auto-hides under fullscreen popups (see
+     AutoBattle.lua). Every Style/ColorSet is a real one from Civ6_Styles.xml. -->
 <Context Name="AutoBattle">
 
-    <!-- Root container, top-center of the HUD, below the top bar. -->
-    <Container ID="AutoBattlePanel" Anchor="C,T" Offset="0,140" Size="210,214" Hidden="0">
+    <!-- Offset Y (230) lifts the whole panel above the ~215px End Turn cluster;
+         Offset X (10) nudges it off the very edge. Height is fixed (bottom-anchor
+         keeps the bottom put), so minimize only hides the body. -->
+    <Container ID="AutoBattlePanel" Anchor="R,B" Offset="10,230" Size="210,242" Hidden="0">
 
-        <!-- Solid dark backing box so faint text has contrast, then a frame on top. -->
-        <Grid Size="210,214" Texture="Controls_SubContainer3" SliceCorner="20,20"
-              SliceSize="1,1" Color="0,0,0,200" />
-        <GridBox Size="210,214" Style="DecoFrame" />
-
-        <Stack StackGrowth="Bottom" Offset="16,16" WrapWidth="178" Padding="6">
-
-            <!-- Title -->
+        <!-- ===== Title bar (always visible, at the TOP of the panel) ===== -->
+        <Container ID="TitleBar" Size="210,38" Anchor="L,T">
+            <!-- Dark backing + ornate DecoFrame so the minimized bar matches the
+                 framed look of the full body. -->
+            <Grid Size="210,38" Texture="Controls_SubContainer3" SliceCorner="20,20"
+                  SliceSize="1,1" Color="0,0,0,220" />
+            <GridBox Size="210,38" Style="DecoFrame" />
             <Label ID="TitleLabel" String="LOC_AUTOBATTLE_TITLE" Font="TitleFont"
-                   FontSize="18" ColorSet="BodyTextCool" Anchor="L,T" />
+                   FontSize="16" ColorSet="BodyTextCool" Anchor="L,C" Offset="14,0" />
+            <!-- Minimize / expand toggle. -->
+            <GridButton ID="MinimizeButton" Size="24,24" Anchor="R,C" Offset="10,0"
+                        Texture="Controls_ExpandButton" ToolTip="LOC_AUTOBATTLE_MINIMIZE_TT" />
+        </Container>
 
-            <!-- Mode selection: three buttons -->
-            <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="BodyTextCool" Anchor="L,T" Offset="0,8" />
+        <!-- ===== Collapsible body (sits just below the 38px title bar) ===== -->
+        <Container ID="BodyContainer" Anchor="L,T" Offset="0,36" Size="210,206" Hidden="0">
 
-            <GridButton ID="ModeAggressive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                        ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
-                <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" ColorSet="ButtonCS" />
-            </GridButton>
+            <!-- Solid dark backing box, then a frame on top. -->
+            <Grid Size="210,206" Texture="Controls_SubContainer3" SliceCorner="20,20"
+                  SliceSize="1,1" Color="0,0,0,200" />
+            <GridBox Size="210,206" Style="DecoFrame" />
 
-            <GridButton ID="ModeBalanced" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                        ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
-                <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" ColorSet="ButtonCS" />
-            </GridButton>
+            <Stack StackGrowth="Bottom" Offset="16,12" WrapWidth="178" Padding="6">
 
-            <GridButton ID="ModePassive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
-                        ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
-                <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" ColorSet="ButtonCS" />
-            </GridButton>
+                <Label String="LOC_AUTOBATTLE_MODE_LABEL" FontSize="13" ColorSet="BodyTextCool" Anchor="L,T" />
 
-            <!-- Run Now -->
-            <GridButton ID="RunNowButton" Size="178,36" Style="ButtonConfirm" Anchor="L,T" Offset="0,10"
-                        ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
-                <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="14" ColorSet="ButtonCS" />
-            </GridButton>
+                <GridButton ID="ModeAggressive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+                            ToolTip="LOC_AUTOBATTLE_MODE_AGGRESSIVE_TT">
+                    <Label ID="ModeAggressiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_AGGRESSIVE" FontSize="13" ColorSet="ButtonCS" />
+                </GridButton>
 
-            <!-- Status line -->
-            <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
-                   ColorSet="BodyTextCool" Anchor="L,T" Offset="0,10" />
+                <GridButton ID="ModeBalanced" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+                            ToolTip="LOC_AUTOBATTLE_MODE_BALANCED_TT">
+                    <Label ID="ModeBalancedLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_BALANCED" FontSize="13" ColorSet="ButtonCS" />
+                </GridButton>
 
-        </Stack>
+                <GridButton ID="ModePassive" Size="178,32" Style="ButtonControl" Anchor="L,T" Offset="0,2"
+                            ToolTip="LOC_AUTOBATTLE_MODE_PASSIVE_TT">
+                    <Label ID="ModePassiveLbl" Anchor="C,C" String="LOC_AUTOBATTLE_MODE_PASSIVE" FontSize="13" ColorSet="ButtonCS" />
+                </GridButton>
+
+                <GridButton ID="RunNowButton" Size="178,36" Style="ButtonConfirm" Anchor="L,T" Offset="0,10"
+                            ToolTip="LOC_AUTOBATTLE_RUN_NOW_TT">
+                    <Label Anchor="C,C" String="LOC_AUTOBATTLE_RUN_NOW" FontSize="14" ColorSet="ButtonCS" />
+                </GridButton>
+
+                <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
+                       ColorSet="BodyTextCool" Anchor="L,T" Offset="0,10" />
+
+            </Stack>
+        </Container>
     </Container>
 </Context>

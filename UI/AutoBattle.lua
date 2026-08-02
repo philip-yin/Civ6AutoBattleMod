@@ -61,6 +61,49 @@ local function OnRunNow()
 end
 
 -- ---------------------------------------------------------------------------
+--  Minimize / expand: collapse the body to just the title bar. State is kept in
+--  m_minimized; the title bar (and its toggle button) stay visible either way.
+-- ---------------------------------------------------------------------------
+local m_minimized = false
+
+local function RefreshMinimizeState()
+    -- The panel is bottom-anchored (docked above End Turn) with the title bar at
+    -- its TOP, so to keep the title bar fixed when minimizing we DON'T resize the
+    -- root (resizing a bottom-anchored control moves its top edge). We just hide
+    -- the body; the title bar holds its position. No leftover click-catcher: the
+    -- root/body are plain Containers (no ConsumeMouse), so the only click targets
+    -- are the buttons/backgrounds inside BodyContainer, which are hidden too.
+    Controls.BodyContainer:SetHide(m_minimized)
+end
+
+local function OnToggleMinimize()
+    m_minimized = not m_minimized
+    RefreshMinimizeState()
+    UI.PlaySound("Main_Menu_Mouse_Over")
+end
+
+-- ---------------------------------------------------------------------------
+--  Auto-hide under fullscreen popups. The base game broadcasts *_Shown/*_Closed
+--  LuaEvents when big screens open (diplomacy, fullscreen map, natural wonder,
+--  etc.). We hide the whole context while any are up and restore afterward, so
+--  the panel never sits on top of a popup. A counter handles overlapping popups.
+-- ---------------------------------------------------------------------------
+local m_popupDepth = 0
+
+local function OnPopupShown()
+    m_popupDepth = m_popupDepth + 1
+    ContextPtr:SetHide(true)
+end
+
+local function OnPopupClosed()
+    m_popupDepth = m_popupDepth - 1
+    if m_popupDepth < 0 then m_popupDepth = 0 end
+    if m_popupDepth == 0 then
+        ContextPtr:SetHide(false)
+    end
+end
+
+-- ---------------------------------------------------------------------------
 --  Init
 --
 --  CRITICAL: panels added via <AddUserInterfaces> are loaded HIDDEN by the base
@@ -84,14 +127,33 @@ local function Initialize()
     Controls.ModeBalanced:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_BALANCED) end)
     Controls.ModePassive:RegisterCallback(Mouse.eLClick, function() SetMode(MODE_PASSIVE) end)
     Controls.RunNowButton:RegisterCallback(Mouse.eLClick, OnRunNow)
+    Controls.MinimizeButton:RegisterCallback(Mouse.eLClick, OnToggleMinimize)
 
     -- Sound feedback (optional, standard UI click sounds)
     Controls.RunNowButton:RegisterCallback(Mouse.eMouseEnter, function()
         UI.PlaySound("Main_Menu_Mouse_Over")
     end)
 
+    -- Auto-hide under fullscreen popups. Guard each hook (event may be absent on
+    -- some builds); harmless if a given popup type never fires.
+    if LuaEvents ~= nil then
+        local shown = {
+            LuaEvents.DiplomacyActionView_Show, LuaEvents.FullscreenMap_Shown,
+            LuaEvents.NaturalWonderPopup_Shown, LuaEvents.ProjectBuiltPopup_Shown,
+            LuaEvents.EndGameMenu_Shown,
+        }
+        local closed = {
+            LuaEvents.DiplomacyActionView_Hide, LuaEvents.FullscreenMap_Closed,
+            LuaEvents.NaturalWonderPopup_Closed, LuaEvents.ProjectBuiltPopup_Closed,
+            LuaEvents.EndGameMenu_Closed,
+        }
+        for _, ev in ipairs(shown)  do if ev ~= nil then ev.Add(OnPopupShown)  end end
+        for _, ev in ipairs(closed) do if ev ~= nil then ev.Add(OnPopupClosed) end end
+    end
+
     -- Initialize visuals + push default config.
     RefreshModeButtons()
+    RefreshMinimizeState()
     PushConfig()
 
     -- Fallback: also un-hide directly, in case the init handler timing differs

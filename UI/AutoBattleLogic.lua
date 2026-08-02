@@ -234,21 +234,23 @@ end
 -- ---------------------------------------------------------------------------
 --  Execution order.
 --
---  Within a single pass we act on units in tactical order so melee open the
---  fight and take tiles, ranged/siege then fire into softened targets, and
---  support units reposition last:
+--  Within a single pass we act on units in tactical order. RANGED/SIEGE fire
+--  FIRST (in place, or reposition to an empty firing tile without displacing a
+--  friend), THEN melee attacks adjacent enemies or steps one tile toward the
+--  target. This keeps ranged safely behind the melee line rather than having
+--  melee vacate tiles the ranged then walk into. Support repositions last:
 --
---      1 = Melee / anti-cavalry / cavalry (adjacent attackers, incl. religious
+--      1 = Ranged (archers, crossbows, field cannon — fire before melee close in)
+--      2 = Siege (catapult, trebuchet, bombard — bombard, esp. into cities)
+--      3 = Melee / anti-cavalry / cavalry (adjacent attackers, incl. religious
 --          combatants, which fight by moving adjacent)
---      2 = Ranged (archers, crossbows, field cannon — fire into what melee softened)
---      3 = Siege (catapult, trebuchet, bombard — bombard, esp. into cities)
 --      4 = Support (medics, battering rams, siege towers, observation balloons)
 --
 --  Lower number executes first.
 -- ---------------------------------------------------------------------------
-local PRIORITY_MELEE   = 1
-local PRIORITY_RANGED  = 2
-local PRIORITY_SIEGE   = 3
+local PRIORITY_RANGED  = 1
+local PRIORITY_SIEGE    = 2
+local PRIORITY_MELEE   = 3
 local PRIORITY_SUPPORT = 4
 
 local function IsSupport(pUnit)
@@ -870,31 +872,59 @@ function GetReachablePlots(pUnit)  -- assigns to the forward-declared local
 end
 
 -- Move to minimize distance to target. Returns true if a move was issued.
-local function AdvanceTowardTarget(pUnit, tgt)
+-- oneTile=true restricts the move to a SINGLE adjacent step (melee stepping in
+-- one tile per Run Now so ranged fire ahead of the closing line); otherwise it
+-- picks the best reachable plot within full movement.
+local function AdvanceTowardTarget(pUnit, tgt, oneTile)
     local reach = GetReachablePlots(pUnit)
+    local ux, uy = pUnit:GetX(), pUnit:GetY()
     local bestX, bestY, bestDist = nil, nil, math.huge
     for _, p in ipairs(reach) do
-        local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
-        if d < bestDist then
-            bestDist = d
-            bestX, bestY = p.x, p.y
+        -- One-tile mode: only consider plots exactly one hex from the unit.
+        if not oneTile or PlotDistance(ux, uy, p.x, p.y) == 1 then
+            local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
+            if d < bestDist then
+                bestDist = d
+                bestX, bestY = p.x, p.y
+            end
         end
     end
-    if bestX ~= nil and (bestX ~= pUnit:GetX() or bestY ~= pUnit:GetY()) then
+    if bestX ~= nil and (bestX ~= ux or bestY ~= uy) then
         return DoMoveTo(pUnit, bestX, bestY)
     end
     return false
 end
 
+-- True if a plot is empty of OTHER units (so a ranged unit repositioning there
+-- doesn't displace/swap with a friendly). The unit's own current tile counts as
+-- empty. Defensive: if the occupancy API is absent, treat as empty (don't block).
+local function PlotIsFreeForMove(pUnit, x, y)
+    if x == pUnit:GetX() and y == pUnit:GetY() then return true end
+    if Units == nil or Units.GetUnitsInPlot == nil then return true end
+    local ok, occupied = Try("GetUnitsInPlot", function()
+        local list = Units.GetUnitsInPlot(x, y)
+        if list == nil then return false end
+        for _, other in ipairs(list) do
+            if other ~= nil and other:GetID() ~= pUnit:GetID() then return true end
+        end
+        return false
+    end)
+    if not ok then return true end   -- API hiccup: don't over-restrict
+    return occupied ~= true
+end
+
 -- For ranged: find reachable plot from which the target is within range,
--- preferring the plot at the MAXIMUM range (safest). Returns x,y or nil.
+-- preferring the plot at the MAXIMUM range (safest). Only considers plots not
+-- already held by another friendly unit, so repositioning never swaps places
+-- with a friend. Returns x,y or nil.
 local function FindMaxRangeFiringPlot(pUnit, tgt)
     local range = pUnit:GetRange() or 1
     local reach = GetReachablePlots(pUnit)
     local bestX, bestY, bestRangeDist = nil, nil, -1
     for _, p in ipairs(reach) do
         local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
-        if d <= range and d >= 1 and d > bestRangeDist then
+        if d <= range and d >= 1 and d > bestRangeDist
+           and PlotIsFreeForMove(pUnit, p.x, p.y) then
             bestRangeDist = d
             bestX, bestY = p.x, p.y
         end
@@ -1111,7 +1141,12 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         end
 
     elseif action == "advance" then
-        AdvanceTowardTarget(pUnit, tgt)
+        -- Melee steps ONE tile per pass in Aggressive/Balanced (ranged already
+        -- fired this pass, ahead of the closing line). Ranged that fell through to
+        -- "advance" (no firing plot) and all other cases move full distance.
+        local oneTile = (not IsRanged(pUnit)) and (not IsAir(pUnit))
+                        and (mode == MODE_AGGRESSIVE or mode == MODE_BALANCED)
+        AdvanceTowardTarget(pUnit, tgt, oneTile)
 
     else -- fortify
         DoHold(pUnit)

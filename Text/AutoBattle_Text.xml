@@ -8,6 +8,9 @@
         <Replace Tag="LOC_AUTOBATTLE_MODE_LABEL" Language="en_US">
             <Text>Mode:</Text>
         </Replace>
+        <Replace Tag="LOC_AUTOBATTLE_MINIMIZE_TT" Language="en_US">
+            <Text>Minimize / expand this panel.</Text>
+        </Replace>
         <Replace Tag="LOC_AUTOBATTLE_RUN_NOW" Language="en_US">
             <Text>Run Now</Text>
         </Replace>

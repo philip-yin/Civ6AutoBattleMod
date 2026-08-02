@@ -22,11 +22,14 @@ ignored), kill a target if possible; otherwise hit the target you deal the most
 damage to. **Distance breaks ties** — a closer enemy is preferred when two
 targets are otherwise equal. Priority order: **kill > damage > distance**.
 
-**Execution order within a pass:** melee/cavalry/religious → ranged (archers,
-crossbows) + air → siege (catapult, trebuchet, bombard) → support (medics, rams,
-towers). Melee open the fight and take tiles, ranged/air fire into softened
-targets, siege bombard (especially cities), support reposition last. Ties within
-a bucket are ordered by unit ID for determinism.
+**Execution order within a pass (one round per Run Now):** ranged (archers,
+crossbows) + air → siege (catapult, trebuchet, bombard) → melee/cavalry/religious
+→ support (medics, rams, towers). Ranged/siege fire **first** — in place, or
+repositioning only to an **empty** tile (never swapping places with a friendly);
+then melee attack an adjacent enemy or **step one tile** toward the target (in
+Aggressive/Balanced), so ranged fire ahead of the closing line. Support
+repositions last. Ties within a bucket are ordered by unit ID for determinism.
+Each Run Now is one such round; click again for the next.
 
 **Which units the mod controls:** any unit with combat, ranged, or religious
 strength — **except recon units** (Scout/Skirmisher/Ranger), which are excluded
