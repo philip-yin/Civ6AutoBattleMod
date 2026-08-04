@@ -736,8 +736,23 @@ local function ChooseBestTarget(pUnit, candidateTargets)
         local t, p = RankTargets(pUnit, attackable)
         if t ~= nil then return t, p end
     end
-    -- Nothing reachable-and-attackable this turn: pick the best to advance toward.
-    return RankTargets(pUnit, rest)
+
+    -- Nothing attackable this turn -> we must ADVANCE. Use STRONG LOCALITY here:
+    -- pick the NEAREST enemy, ignoring kill/damage quality. This keeps units (and
+    -- separated groups) engaging enemies in THEIR area instead of marching half the
+    -- map toward a marginally better global target. Quality re-enters the decision
+    -- next turn once something is actually attackable (the tier above). Distance is
+    -- to the unit's current position (tgt.dist was filled in GatherEnemyTargets).
+    local nearest, nearestDist, nearestPred = nil, math.huge, nil
+    for _, tgt in ipairs(rest) do
+        local d = tgt.dist or math.huge
+        if d < nearestDist then
+            nearestDist = d
+            nearest = tgt
+            nearestPred = PredictCombat(pUnit, tgt)  -- ok if nil; advance doesn't need it
+        end
+    end
+    return nearest, nearestPred
 end
 
 -- ---------------------------------------------------------------------------
