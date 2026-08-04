@@ -342,10 +342,31 @@ end
 -- candidate; fogged/never-seen enemies are excluded. Each target records its
 -- tile distance from the unit so callers can prioritize by proximity.
 -- Returns a list of { kind="unit"|"city", obj=..., x=, y=, playerId=, dist= }.
+-- True if this plot is a water tile (naval units sit here; land melee can't
+-- attack into it). Defensive: unknown -> treat as land (don't over-filter).
+local function PlotIsWater(x, y)
+    if Map == nil or Map.GetPlot == nil then return false end
+    local ok, isWater = Try("IsWater", function()
+        local p = Map.GetPlot(x, y)
+        return p ~= nil and p:IsWater() == true
+    end)
+    return ok and isWater == true
+end
+
 local function GatherEnemyTargets(pUnit, selfPlayerId)
     local targets = {}
     local ux, uy = pUnit:GetX(), pUnit:GetY()
     local attackerReligious = IsReligious(pUnit)
+
+    -- Cross-domain MELEE rule: a melee LAND unit cannot attack a target on a WATER
+    -- tile (enemy ship), and a melee NAVAL unit cannot attack a target on a LAND
+    -- tile. Ranged/air units CAN hit across domains within range, so this only
+    -- applies to melee. We check the TARGET'S plot (water vs land), which is what
+    -- actually gates a melee reach. attackerMeleeDomain is nil for ranged/air.
+    local attackerMeleeDomain = nil
+    if not IsRanged(pUnit) and not IsAir(pUnit) then
+        attackerMeleeDomain = UnitDomain(pUnit)   -- DOMAIN_LAND / DOMAIN_SEA
+    end
 
     for _, player in ipairs(Game.GetPlayers()) do
         local pid = player:GetID()
@@ -388,6 +409,18 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
                             end
                         end
                         local ex, ey = e:GetX(), e:GetY()
+
+                        -- Cross-domain melee filter: drop targets a melee unit can't
+                        -- reach across the land/water boundary.
+                        if validPair and attackerMeleeDomain ~= nil then
+                            local tgtOnWater = PlotIsWater(ex, ey)
+                            if attackerMeleeDomain == "DOMAIN_LAND" and tgtOnWater then
+                                validPair = false      -- land melee can't hit a ship
+                            elseif attackerMeleeDomain == "DOMAIN_SEA" and not tgtOnWater then
+                                validPair = false      -- naval melee can't hit a land unit
+                            end
+                        end
+
                         if validPair and IsPlotVisibleTo(selfPlayerId, ex, ey) then
                             table.insert(targets, {
                                 kind = "unit", obj = e, x = ex, y = ey, playerId = pid,
