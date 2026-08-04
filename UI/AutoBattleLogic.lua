@@ -920,22 +920,31 @@ end
 -- oneTile=true restricts the move to a SINGLE adjacent step (melee stepping in
 -- one tile per Run Now so ranged fire ahead of the closing line); otherwise it
 -- picks the best reachable plot within full movement.
+-- FALLBACK: candidate plots are tried in order of closeness-to-target; if the
+-- best one's MOVE_TO is rejected (path blocked by a unit, engine refusal, etc.)
+-- we try the next-best, so a unit isn't left frozen when its ideal tile fails.
 local function AdvanceTowardTarget(pUnit, tgt, oneTile)
     local reach = GetReachablePlots(pUnit)
     local ux, uy = pUnit:GetX(), pUnit:GetY()
-    local bestX, bestY, bestDist = nil, nil, math.huge
+
+    -- Build the list of candidate destinations (excluding the current tile),
+    -- each scored by distance to the target.
+    local cands = {}
     for _, p in ipairs(reach) do
-        -- One-tile mode: only consider plots exactly one hex from the unit.
-        if not oneTile or PlotDistance(ux, uy, p.x, p.y) == 1 then
-            local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
-            if d < bestDist then
-                bestDist = d
-                bestX, bestY = p.x, p.y
-            end
+        if (p.x ~= ux or p.y ~= uy)
+           and (not oneTile or PlotDistance(ux, uy, p.x, p.y) == 1) then
+            table.insert(cands, { x = p.x, y = p.y, d = PlotDistance(p.x, p.y, tgt.x, tgt.y) })
         end
     end
-    if bestX ~= nil and (bestX ~= ux or bestY ~= uy) then
-        return DoMoveTo(pUnit, bestX, bestY)
+    table.sort(cands, function(a, b)
+        if a.d ~= b.d then return a.d < b.d end
+        return (a.x * 1000 + a.y) < (b.x * 1000 + b.y)  -- stable tiebreak
+    end)
+
+    -- Try closest-to-target first; fall through to the next if the move fails.
+    for _, c in ipairs(cands) do
+        if DoMoveTo(pUnit, c.x, c.y) then return true end
+        DebugLog(string.format("    advance dest (%s,%s) rejected; trying next", S(c.x), S(c.y)))
     end
     return false
 end
@@ -958,23 +967,31 @@ local function PlotIsFreeForMove(pUnit, x, y)
     return occupied ~= true
 end
 
--- For ranged: find reachable plot from which the target is within range,
--- preferring the plot at the MAXIMUM range (safest). Only considers plots not
--- already held by another friendly unit, so repositioning never swaps places
--- with a friend. Returns x,y or nil.
-local function FindMaxRangeFiringPlot(pUnit, tgt)
+-- For ranged: all reachable plots from which the target is within range and that
+-- aren't held by a friendly, RANKED by preference (max range first = safest).
+-- Returned as a sorted list so callers can try the next-best if a move fails.
+local function RankedFiringPlots(pUnit, tgt)
     local range = pUnit:GetRange() or 1
     local reach = GetReachablePlots(pUnit)
-    local bestX, bestY, bestRangeDist = nil, nil, -1
+    local plots = {}
     for _, p in ipairs(reach) do
         local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
-        if d <= range and d >= 1 and d > bestRangeDist
-           and PlotIsFreeForMove(pUnit, p.x, p.y) then
-            bestRangeDist = d
-            bestX, bestY = p.x, p.y
+        if d <= range and d >= 1 and PlotIsFreeForMove(pUnit, p.x, p.y) then
+            table.insert(plots, { x = p.x, y = p.y, d = d })
         end
     end
-    if bestX ~= nil then return bestX, bestY end
+    -- Prefer MAX range (fire from as far as possible), stable tiebreak.
+    table.sort(plots, function(a, b)
+        if a.d ~= b.d then return a.d > b.d end
+        return (a.x * 1000 + a.y) < (b.x * 1000 + b.y)
+    end)
+    return plots
+end
+
+-- Best single firing plot (or nil,nil). Kept for the DecideAction moveattack path.
+local function FindMaxRangeFiringPlot(pUnit, tgt)
+    local plots = RankedFiringPlots(pUnit, tgt)
+    if #plots > 0 then return plots[1].x, plots[1].y end
     return nil, nil
 end
 
@@ -1313,16 +1330,43 @@ end
 -- Preference: a target already in range (closest wins); otherwise the nearest
 -- target overall (so we can try to reposition into range).
 local function ChooseRangedTarget(pUnit, targets)
-    local bestInRange, bestInRangeDist = nil, math.huge
-    local bestAny,     bestAnyDist     = nil, math.huge
+    -- Split into "in range right now" vs. the rest, then rank each group by
+    -- kill-first -> max-damage -> closest (RankTargets). Firing at an in-range
+    -- target beats repositioning, and WITHIN the in-range group we now prioritize
+    -- a predicted KILL and then max damage instead of just the nearest tile --
+    -- so a low-HP enemy we can finish gets shot before a healthier nearer one.
+    local inRange, rest = {}, {}
     for _, t in ipairs(targets) do
-        local d = t.dist or math.huge
-        if d < bestAnyDist then bestAnyDist = d; bestAny = t end
-        if CanAttackNow(pUnit, t) and d < bestInRangeDist then
-            bestInRangeDist = d; bestInRange = t
+        if CanAttackNow(pUnit, t) then
+            table.insert(inRange, t)
+        else
+            table.insert(rest, t)
         end
     end
-    return bestInRange or bestAny
+
+    if #inRange > 0 then
+        local t = RankTargets(pUnit, inRange)
+        -- RankTargets can return nil if prediction failed for ALL in-range
+        -- targets; never freeze -> fall back to the closest in-range one.
+        if t ~= nil then return t end
+        local closest, cd = nil, math.huge
+        for _, x in ipairs(inRange) do
+            local d = x.dist or math.huge
+            if d < cd then cd = d; closest = x end
+        end
+        return closest
+    end
+
+    -- None in range: pick the best target to reposition toward (kill/damage
+    -- ranked; falls back to nearest if prediction is unavailable).
+    local t = RankTargets(pUnit, rest)
+    if t ~= nil then return t end
+    local closest, cd = nil, math.huge
+    for _, x in ipairs(rest) do
+        local d = x.dist or math.huge
+        if d < cd then cd = d; closest = x end
+    end
+    return closest
 end
 
 local function ExecuteRanged(pUnit, selfPlayerId)
@@ -1349,15 +1393,20 @@ local function ExecuteRanged(pUnit, selfPlayerId)
         return true
     end
 
-    -- 2) Else move to an EMPTY firing tile (FindMaxRangeFiringPlot already skips
-    --    tiles held by a friendly) and fire once the move completes.
-    local fx, fy = FindMaxRangeFiringPlot(pUnit, tgt)
-    if fx ~= nil then
-        DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
-            S(fx), S(fy), S(tgt.x), S(tgt.y)))
+    -- 2) Else move to an EMPTY firing tile and fire once the move completes. Try
+    --    firing plots in ranked order (max range first); if a move is rejected
+    --    (path blocked, engine refusal), fall through to the next-best plot so a
+    --    blocked ideal tile doesn't leave the unit idle.
+    local plots = RankedFiringPlots(pUnit, tgt)
+    for _, fp in ipairs(plots) do
         m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
-        DoMoveTo(pUnit, fx, fy)
-        return true
+        if DoMoveTo(pUnit, fp.x, fp.y) then
+            DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
+                S(fp.x), S(fp.y), S(tgt.x), S(tgt.y)))
+            return true
+        end
+        m_pendingShots[pUnit:GetID()] = nil  -- move failed; clear the pending shot
+        DebugLog(string.format("    ranged firing tile (%s,%s) rejected; trying next", S(fp.x), S(fp.y)))
     end
 
     -- 3) No shot and no clear firing move -> wait.
