@@ -841,14 +841,53 @@ end
 function CanAttackThisTurn(pUnit, tgt)
     if CanAttackNow(pUnit, tgt) then return true end
     if IsAir(pUnit) then return false end            -- air can't reposition to attack
-    local range = IsRanged(pUnit) and (pUnit:GetRange() or 1) or 1
-    local reach = GetReachablePlots(pUnit)
-    if reach == nil then return false end
-    for _, p in ipairs(reach) do
-        local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
-        if d >= 1 and d <= range then return true end  -- can reach a firing/adjacent tile
+
+    -- IMPORTANT: don't use pure hex distance to decide reach-and-attack. A tile can
+    -- be hex-adjacent to the target yet cost the unit ALL its movement to reach --
+    -- so it arrives with no moves left and CANNOT attack this turn. The engine's
+    -- CanStartOperation accounts for real path/terrain cost, ZoC, etc., so we ask
+    -- IT whether a move-and-attack (melee) / range-attack (ranged) is actually
+    -- legal this turn, rather than approximating with distance.
+    if UnitManager == nil or UnitManager.CanStartOperation == nil then
+        -- API absent: fall back to the old distance heuristic (best effort).
+        local range = IsRanged(pUnit) and (pUnit:GetRange() or 1) or 1
+        local reach = GetReachablePlots(pUnit)
+        if reach ~= nil then
+            for _, p in ipairs(reach) do
+                local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
+                if d >= 1 and d <= range then return true end
+            end
+        end
+        return false
     end
-    return false
+
+    if IsRanged(pUnit) then
+        -- Ranged/siege: is the target a legal RANGE_ATTACK target this turn? (This
+        -- covers "already in range"; repositioning-then-firing is handled by the
+        -- move&shoot path separately, so here we just need a real in-range shot.)
+        local params = {}
+        params[UnitOperationTypes.PARAM_X] = tgt.x
+        params[UnitOperationTypes.PARAM_Y] = tgt.y
+        local ok, can = Try("CanStart.RangeAttack", function()
+            return UnitManager.CanStartOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, nil, params)
+        end)
+        return ok and can == true
+    end
+
+    -- Melee/religious: can we MOVE_TO (with the ATTACK modifier) the target this
+    -- turn and actually strike? CanStartOperation returns false if we can't reach
+    -- an adjacent tile with movement to spare, so a far target that would exhaust
+    -- movement en route is correctly rejected.
+    local params = {}
+    params[UnitOperationTypes.PARAM_X] = tgt.x
+    params[UnitOperationTypes.PARAM_Y] = tgt.y
+    if UnitOperationMoveModifiers ~= nil then
+        params[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
+    end
+    local ok, can = Try("CanStart.MoveAttack", function()
+        return UnitManager.CanStartOperation(pUnit, UnitOperationTypes.MOVE_TO, nil, params)
+    end)
+    return ok and can == true
 end
 
 -- ---------------------------------------------------------------------------
