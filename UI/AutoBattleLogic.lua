@@ -674,20 +674,21 @@ end
 -- decides between them (combat previews are estimates, not exact).
 local DMG_TIE_EPSILON = 1.0
 
-local function ChooseBestTarget(pUnit, candidateTargets)
+-- Rank a set of targets by kill-first -> max-damage -> closest, over the given
+-- list only. Returns (target, pred) or (nil, nil).
+local function RankTargets(pUnit, list)
     local bestKillTarget, bestKillPred = nil, nil
     local bestDmgTarget,  bestDmgPred  = nil, nil
-    local bestKillDist = math.huge   -- among killable, prefer the closest
+    local bestKillDist = math.huge
     local bestDmg      = -math.huge
     local bestDmgDist  = math.huge
 
-    for _, tgt in ipairs(candidateTargets) do
+    for _, tgt in ipairs(list) do
         local pred = PredictCombat(pUnit, tgt)
         if pred ~= nil and pred.defenderRemaining ~= nil then
             local dmg  = pred.attackerDamage or (MAX_HP - pred.defenderRemaining)
             local dist = tgt.dist or math.huge
 
-            -- Killable? (defender predicted HP <= 0) -> pick the closest kill.
             if pred.defenderRemaining <= 0 then
                 if dist < bestKillDist then
                     bestKillDist = dist
@@ -695,13 +696,11 @@ local function ChooseBestTarget(pUnit, candidateTargets)
                 end
             end
 
-            -- Track max-damage; break damage ties by distance.
             if dmg > bestDmg + DMG_TIE_EPSILON then
                 bestDmg = dmg
                 bestDmgDist = dist
                 bestDmgTarget, bestDmgPred = tgt, pred
             elseif dmg > bestDmg - DMG_TIE_EPSILON and dist < bestDmgDist then
-                -- Effectively equal damage, but closer.
                 if dmg > bestDmg then bestDmg = dmg end
                 bestDmgDist = dist
                 bestDmgTarget, bestDmgPred = tgt, pred
@@ -709,10 +708,36 @@ local function ChooseBestTarget(pUnit, candidateTargets)
         end
     end
 
-    if bestKillTarget ~= nil then
-        return bestKillTarget, bestKillPred
-    end
+    if bestKillTarget ~= nil then return bestKillTarget, bestKillPred end
     return bestDmgTarget, bestDmgPred
+end
+
+-- Choose the best target, with ATTACK-THIS-TURN taking absolute priority over
+-- chasing. We split candidates into those the unit can hit this turn (in place or
+-- by move-and-attack) vs. the rest, then rank the ATTACKABLE group first. Only if
+-- nothing is attackable this turn do we fall back to the best distant target to
+-- advance toward. This stops a unit from ignoring an adjacent enemy to chase a
+-- far low-HP / high-damage target -- while still ALLOWING a move-and-attack that
+-- reaches the target this turn (that target is in the attackable group).
+-- (CanAttackThisTurn is defined below, after CanAttackNow/GetReachablePlots; it is
+-- forward-declared here so this closure captures it as an upvalue.)
+local CanAttackThisTurn
+local function ChooseBestTarget(pUnit, candidateTargets)
+    local attackable, rest = {}, {}
+    for _, tgt in ipairs(candidateTargets) do
+        if CanAttackThisTurn(pUnit, tgt) then
+            table.insert(attackable, tgt)
+        else
+            table.insert(rest, tgt)
+        end
+    end
+
+    if #attackable > 0 then
+        local t, p = RankTargets(pUnit, attackable)
+        if t ~= nil then return t, p end
+    end
+    -- Nothing reachable-and-attackable this turn: pick the best to advance toward.
+    return RankTargets(pUnit, rest)
 end
 
 -- ---------------------------------------------------------------------------
@@ -734,6 +759,26 @@ local function CanAttackNow(pUnit, tgt)
     end
     -- Melee / religious: must be adjacent.
     return dist <= 1
+end
+
+-- Can this unit attack that target THIS TURN -- either from where it stands
+-- (CanAttackNow) OR by moving within its remaining movement to a tile from which
+-- it can hit? For melee: a reachable tile adjacent to the target. For ranged/air:
+-- a reachable tile within range (air never paths, so only CanAttackNow applies).
+-- This is what makes "attack" beat "chase a distant target": a far low-HP enemy
+-- is NOT attackable-this-turn, so it loses to an adjacent one that is.
+-- (Assigns to the forward-declared local above ChooseBestTarget.)
+function CanAttackThisTurn(pUnit, tgt)
+    if CanAttackNow(pUnit, tgt) then return true end
+    if IsAir(pUnit) then return false end            -- air can't reposition to attack
+    local range = IsRanged(pUnit) and (pUnit:GetRange() or 1) or 1
+    local reach = GetReachablePlots(pUnit)
+    if reach == nil then return false end
+    for _, p in ipairs(reach) do
+        local d = PlotDistance(p.x, p.y, tgt.x, tgt.y)
+        if d >= 1 and d <= range then return true end  -- can reach a firing/adjacent tile
+    end
+    return false
 end
 
 -- ---------------------------------------------------------------------------
