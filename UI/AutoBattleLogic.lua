@@ -349,7 +349,16 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
 
     for _, player in ipairs(Game.GetPlayers()) do
         local pid = player:GetID()
-        if pid ~= selfPlayerId and AreEnemies(selfPlayerId, pid) then
+        -- Which foreign players are targetable depends on the attacker:
+        --   * MILITARY: only players we are AT WAR with.
+        --   * RELIGIOUS (theological combat): ANY foreign player -- religious
+        --     units can fight each other in peacetime too, so war is NOT required.
+        --     The engine's CanStartOperation (in TryOperation) is the final gate on
+        --     whether a specific religious attack is actually legal; we just stop
+        --     pre-filtering valid religious targets out by war status.
+        local considerPlayer = (pid ~= selfPlayerId)
+            and (attackerReligious or AreEnemies(selfPlayerId, pid))
+        if considerPlayer then
 
             -- Enemy units
             local pUnits = player:GetUnits()
@@ -359,11 +368,24 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
                         -- Targeting rule (asymmetric):
                         --   * A RELIGIOUS attacker can only fight other religious
                         --     units (theological combat).
-                        --   * A MILITARY attacker can hit anything, including
-                        --     enemy religious units (normal combat kills them).
+                        --   * A MILITARY attacker can hit military targets, but NOT
+                        --     enemy religious CIVILIANS: those have 0 military
+                        --     combat strength and are removed via the special
+                        --     "Condemn Heretic" COMMAND (move adjacent + button),
+                        --     not via a combat attack. Issuing an attack at them
+                        --     just wastes the unit's turn, so we skip them here.
+                        --     (A religious unit that somehow HAS military combat
+                        --     strength would still be targetable.)
                         local validPair = true
                         if attackerReligious then
                             validPair = IsReligious(e)
+                        else
+                            -- Military attacker: exclude no-combat religious civilians.
+                            local eCombat  = e:GetCombat() or 0
+                            local eRanged  = e:GetRangedCombat() or 0
+                            if IsReligious(e) and eCombat == 0 and eRanged == 0 then
+                                validPair = false
+                            end
                         end
                         local ex, ey = e:GetX(), e:GetY()
                         if validPair and IsPlotVisibleTo(selfPlayerId, ex, ey) then
