@@ -8,9 +8,10 @@
 <Context Name="AutoBattle">
 
     <!-- Offset Y (230) lifts the whole panel above the ~215px End Turn cluster;
-         Offset X (10) nudges it off the very edge. Height is fixed (bottom-anchor
-         keeps the bottom put), so minimize only hides the body. -->
-    <Container ID="AutoBattlePanel" Anchor="R,B" Offset="10,230" Size="210,274" Hidden="0">
+         Offset X (70) nudges it further left, clear of the turn/time events
+         banner along the right edge. Height is fixed (bottom-anchor keeps the
+         bottom put), so minimize only hides the body. -->
+    <Container ID="AutoBattlePanel" Anchor="R,B" Offset="70,230" Size="210,274" Hidden="0">
 
         <!-- ===== Title bar (always visible, at the TOP of the panel) ===== -->
         <Container ID="TitleBar" Size="210,38" Anchor="L,T">
