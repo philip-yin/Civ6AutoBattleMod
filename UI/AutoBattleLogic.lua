@@ -59,6 +59,42 @@ local function DebugLog(msg)
     if DEBUG then print("[AutoBattle][dbg] " .. tostring(msg)) end
 end
 
+-- ---------------------------------------------------------------------------
+--  On-panel diagnostics. This build (Aspyr/Epic on macOS) does not write a
+--  Lua.log, so we can't inspect runtime traces in a file. Instead each pass
+--  accumulates a small outcome breakdown that the panel reads afterward and
+--  shows on its status line -- so a failure ("saw the enemy but didn't fire")
+--  is self-explaining in-game with no log needed.
+--
+--  m_diag counts, reset at the start of each pass by RunPassFiltered:
+--    fired    -- units that actually attacked (in place or move&shoot committed)
+--    noTarget -- units that found ZERO candidate targets (filter dropped them?)
+--    refused  -- units in range whose shot the engine refused (LOS/other)
+--    moved    -- units that repositioned toward a target (advance / move&shoot)
+--    held     -- units that just held (no viable action)
+-- ---------------------------------------------------------------------------
+local m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+
+local function DiagReset()
+    m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+end
+
+local function Diag(key)
+    if m_diag[key] ~= nil then m_diag[key] = m_diag[key] + 1 end
+end
+
+-- Public: a compact one-line summary of the last pass, for the panel status line.
+-- e.g. "fired 2 | held 1 | no target 1". Empty string if nothing of note.
+function AutoBattle_LastDiag()
+    local parts = {}
+    if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
+    if m_diag.moved    > 0 then table.insert(parts, "moved "     .. m_diag.moved)    end
+    if m_diag.refused  > 0 then table.insert(parts, "refused "   .. m_diag.refused)  end
+    if m_diag.noTarget > 0 then table.insert(parts, "no target " .. m_diag.noTarget) end
+    if m_diag.held     > 0 then table.insert(parts, "held "      .. m_diag.held)     end
+    return table.concat(parts, " | ")
+end
+
 -- Safe read of a value for logging (never errors, never nil-crashes concat).
 local function S(v)
     if v == nil then return "nil" end
@@ -333,6 +369,19 @@ local function AreEnemies(pPlayerA_id, pPlayerB_id)
     if pPlayerA_id == pPlayerB_id then return false end
     local pPlayerA = Players[pPlayerA_id]
     if pPlayerA == nil then return false end
+
+    -- Barbarians are ALWAYS hostile, but IsAtWarWith(barbarianPlayer) is not
+    -- reliable across builds/slots (it can return false even though the unit is
+    -- attackable) -- which is exactly why a ranged unit intermittently refused to
+    -- fire at an in-LOS barbarian ship/scout: the target got dropped from the
+    -- candidate list here before any attack was attempted. Treat the OTHER player
+    -- being a barbarian as enemy directly, bypassing the diplomacy war check.
+    local pPlayerB = Players[pPlayerB_id]
+    if pPlayerB ~= nil then
+        local okB, isBarb = Try("IsBarbarian", function() return pPlayerB:IsBarbarian() end)
+        if okB and isBarb == true then return true end
+    end
+
     local pDiplo = pPlayerA:GetDiplomacy()
     if pDiplo == nil then return false end
     local ok, atWar = Try("IsAtWarWith", function() return pDiplo:IsAtWarWith(pPlayerB_id) end)
@@ -1561,8 +1610,18 @@ end
 
 local function ExecuteRanged(pUnit, selfPlayerId)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
+    DebugLog(string.format("  ranged %s: %d candidate target(s)", DescribeUnit(pUnit), #targets))
     if #targets == 0 then
-        DebugLog("  ranged: no visible enemy -> wait")
+        -- No enemy in sight: don't just sit -- scout toward the nearest fog edge
+        -- (same explorer idle melee uses), so ranged units advance the map with
+        -- their leftover movement. Fall back to hold if there's nowhere to explore.
+        Diag("noTarget")
+        if ExecuteExplore(pUnit, selfPlayerId) then
+            DebugLog("  ranged: no visible enemy -> explore")
+            Diag("moved")
+            return true
+        end
+        DebugLog("  ranged: no visible enemy, nothing to explore -> wait")
         DoHold(pUnit)
         return false   -- nothing to shoot; didn't really act
     end
@@ -1572,15 +1631,23 @@ local function ExecuteRanged(pUnit, selfPlayerId)
     local tgt = ChooseRangedTarget(pUnit, targets)
     if tgt == nil then
         DebugLog("  ranged: no target -> wait")
+        Diag("noTarget")
         DoHold(pUnit)
         return false
     end
 
-    -- 1) Shoot in place if the target is already in range.
+    -- 1) Shoot in place if the target is already in range. CanAttackNow is a pure
+    --    hex-distance test (no LOS), so the engine can still refuse the shot; only
+    --    treat it as done if DoAttackAt actually succeeded. On refusal, fall through
+    --    to the reposition-and-shoot branch (a firing plot may have a clear line).
     if CanAttackNow(pUnit, tgt) then
         DebugLog(string.format("  ranged: fire in place at (%s,%s) dist=%s", S(tgt.x), S(tgt.y), S(tgt.dist)))
-        DoAttackAt(pUnit, tgt.x, tgt.y)
-        return true
+        if DoAttackAt(pUnit, tgt.x, tgt.y) then
+            Diag("fired")
+            return true
+        end
+        Diag("refused")
+        DebugLog("  ranged: in-place shot refused -> try reposition")
     end
 
     -- 2) Else move to an EMPTY firing tile and fire once the move completes. Try
@@ -1593,6 +1660,7 @@ local function ExecuteRanged(pUnit, selfPlayerId)
         if DoMoveTo(pUnit, fp.x, fp.y) then
             DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
                 S(fp.x), S(fp.y), S(tgt.x), S(tgt.y)))
+            Diag("moved")
             return true
         end
         m_pendingShots[pUnit:GetID()] = nil  -- move failed; clear the pending shot
@@ -1601,6 +1669,7 @@ local function ExecuteRanged(pUnit, selfPlayerId)
 
     -- 3) No shot and no clear firing move -> wait.
     DebugLog("  ranged: cannot shoot or reposition cleanly -> wait")
+    Diag("held")
     DoHold(pUnit)
     return false
 end
@@ -1637,6 +1706,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local function RunPassFiltered(label, want, act)
+    DiagReset()   -- fresh per-pass outcome counts for the on-panel status line
     -- Don't query/order the game core while it is busy (resolving combat, a
     -- move, or a turn transition) -- predictions can come back stale and
     -- operations may be dropped. Mirrors the real UI's guard

@@ -49,9 +49,18 @@ end
 -- ---------------------------------------------------------------------------
 --  Handlers
 -- ---------------------------------------------------------------------------
--- Update the status line from a pass result (units acted on).
+-- Update the status line from a pass result (units acted on). Since this build
+-- doesn't write Lua.log, we also append the brain's per-pass outcome breakdown
+-- (fired / moved / refused / no target / held) so a failure is diagnosable
+-- in-game, right on the panel, with no log file.
 local function ShowResult(count)
-    if (count or 0) > 0 then
+    local diag = ""
+    if AutoBattle_LastDiag ~= nil then diag = AutoBattle_LastDiag() or "" end
+
+    if diag ~= "" then
+        -- Show the raw breakdown directly (already human-readable).
+        Controls.StatusLabel:SetText(diag)
+    elseif (count or 0) > 0 then
         Controls.StatusLabel:LocalizeAndSetText("LOC_AUTOBATTLE_STATUS_RAN", count)
     else
         Controls.StatusLabel:LocalizeAndSetText("LOC_AUTOBATTLE_STATUS_IDLE")
