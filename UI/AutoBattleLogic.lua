@@ -119,6 +119,19 @@ local function IsEligibleUnit(pUnit)
     -- Explicit exclusions: recon units are skipped even though they have combat.
     if IsRecon(pUnit) then return false end
 
+    -- MANUALLY PARKED units are left completely alone by the mod (both Run buttons,
+    -- all modes): a unit you Sleep (Z) or Fortify stays put. NOTE: "fortify until
+    -- healed" can't be distinguished from a plain fortify (both just set
+    -- GetFortifyTurns > 0), so ALL fortified units are skipped -- including ones the
+    -- mod auto-fortified as its "hold" action, which therefore won't auto re-engage
+    -- until you wake them. Sleep is the durable "don't touch this unit" marker.
+    if UnitManager ~= nil and UnitManager.GetActivityType ~= nil and ActivityTypes ~= nil then
+        local ok, act = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
+        if ok and act == ActivityTypes.ACTIVITY_SLEEP then return false end
+    end
+    local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
+    if okF and fort ~= nil and fort > 0 then return false end
+
     -- Has offensive capability of some kind?
     local combat = pUnit:GetCombat()
     local rangedCombat = pUnit:GetRangedCombat()
@@ -810,6 +823,69 @@ local function ChooseBestTarget(pUnit, candidateTargets)
     return nearest, nearestPred
 end
 
+-- Melee target choice: DISTANCE-FIRST. Among enemies the unit can actually
+-- move-and-attack THIS turn (engine-checked via CanAttackThisTurn), pick the
+-- CLOSEST; break ties by kill > max-damage > lowest enemy HP. This stops a melee
+-- unit from fixating on a juicy low-HP target stuck BEHIND enemy lines that it
+-- can't reach -- it engages the nearest reachable enemy instead. If nothing is
+-- attackable this turn, advance (full movement) toward the nearest enemy overall.
+local function ChooseMeleeTarget(pUnit, candidateTargets)
+    local attackable = {}
+    local nearestAny, nearestAnyDist = nil, math.huge
+    for _, tgt in ipairs(candidateTargets) do
+        local d = tgt.dist or math.huge
+        if d < nearestAnyDist then nearestAnyDist = d; nearestAny = tgt end
+        if CanAttackThisTurn(pUnit, tgt) then
+            table.insert(attackable, tgt)
+        end
+    end
+
+    if #attackable > 0 then
+        -- Enemy current HP for the final tiebreak: more damage taken = lower HP.
+        local function enemyDamage(t)
+            if t.kind == "unit" and t.obj ~= nil then
+                local ok, dmg = pcall(function() return t.obj:GetDamage() end)
+                return (ok and dmg) or 0
+            end
+            return 0  -- cities: treat as full (don't bias toward them on HP)
+        end
+
+        local best, bestPred = nil, nil
+        for _, t in ipairs(attackable) do
+            local pred = PredictCombat(pUnit, t)
+            if best == nil then
+                best, bestPred = t, pred
+            else
+                local dCmp = (t.dist or math.huge) - (best.dist or math.huge)
+                local pick = false
+                if dCmp < 0 then
+                    pick = true                         -- strictly closer
+                elseif dCmp == 0 then
+                    -- Tie on distance -> kill > damage > lowest enemy HP.
+                    local tKill = pred ~= nil and pred.defenderRemaining ~= nil and pred.defenderRemaining <= 0
+                    local bKill = bestPred ~= nil and bestPred.defenderRemaining ~= nil and bestPred.defenderRemaining <= 0
+                    if tKill ~= bKill then
+                        pick = tKill                    -- prefer the kill
+                    else
+                        local tDmg = (pred and pred.attackerDamage) or 0
+                        local bDmg = (bestPred and bestPred.attackerDamage) or 0
+                        if math.abs(tDmg - bDmg) > DMG_TIE_EPSILON then
+                            pick = tDmg > bDmg           -- prefer more damage
+                        else
+                            pick = enemyDamage(t) > enemyDamage(best)  -- prefer lower-HP enemy
+                        end
+                    end
+                end
+                if pick then best, bestPred = t, pred end
+            end
+        end
+        return best, bestPred
+    end
+
+    -- Nothing attackable this turn: advance toward the nearest enemy overall.
+    return nearestAny, (nearestAny and PredictCombat(pUnit, nearestAny) or nil)
+end
+
 -- ---------------------------------------------------------------------------
 --  Reachability / range checks
 -- ---------------------------------------------------------------------------
@@ -1269,7 +1345,15 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     end
     DebugLog("  " .. S(#targets) .. " candidate target(s) in view")
 
-    local tgt, pred = ChooseBestTarget(pUnit, targets)
+    -- Melee/religious combatants use DISTANCE-FIRST selection (closest reachable,
+    -- tiebreak kill>damage>HP). Ranged/air keep the kill>damage>distance ranking.
+    local isMeleeSelector = (not IsRanged(pUnit)) and (not IsAir(pUnit))
+    local tgt, pred
+    if isMeleeSelector then
+        tgt, pred = ChooseMeleeTarget(pUnit, targets)
+    else
+        tgt, pred = ChooseBestTarget(pUnit, targets)
+    end
     if tgt == nil then
         if fortifyIfNoTarget then
             DebugLog("  no predictable target -> fortify")
@@ -1312,12 +1396,9 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         end
 
     elseif action == "advance" then
-        -- Melee steps ONE tile per pass in Aggressive/Balanced (ranged already
-        -- fired this pass, ahead of the closing line). Ranged that fell through to
-        -- "advance" (no firing plot) and all other cases move full distance.
-        local oneTile = (not IsRanged(pUnit)) and (not IsAir(pUnit))
-                        and (mode == MODE_AGGRESSIVE or mode == MODE_BALANCED)
-        AdvanceTowardTarget(pUnit, tgt, oneTile)
+        -- Advance using FULL movement toward the target (no 1-tile cap). If nothing
+        -- was attackable this turn, close the distance as far as movement allows.
+        AdvanceTowardTarget(pUnit, tgt)
 
     else -- fortify
         DoHold(pUnit)
