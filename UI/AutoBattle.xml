@@ -73,8 +73,12 @@
                     </GridButton>
                 </Stack>
 
-                <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
-                       Color="0,0,0,255" Anchor="L,T" Offset="0,10" />
+                <Container Size="178,44" Anchor="L,T" Offset="0,10">
+                    <Grid Size="178,44" Texture="Controls_SubContainer3" SliceCorner="20,20"
+                          SliceSize="1,1" Color="0,0,0,255" Anchor="L,T" />
+                    <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
+                           Color="255,255,255,255" Anchor="L,T" Offset="6,6" />
+                </Container>
 
             </Stack>
         </Container>
