@@ -592,7 +592,7 @@ do
     M.reset(); M.localPlayerId = 0
     M.playerReligion[0] = "REL_OURS"
     M.players[0] = M.makePlayer{ id=0,
-        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+        units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN", promotionClass=nil } },
         cities = { { id=300, x=6, y=5, religion="REL_PAGAN" } } }  -- our unconverted city, adjacent
     M.install(); loadLogic()
@@ -610,7 +610,7 @@ do
     M.reset(); M.localPlayerId = 0
     M.playerReligion[0] = "REL_OURS"
     M.players[0] = M.makePlayer{ id=0,
-        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+        units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN" } },
         cities = { { id=300, x=10, y=5, religion="REL_PAGAN" } } }
     -- Reachable plots: index 6005 = (6,5) closer to the city.
@@ -632,7 +632,7 @@ do
     M.reset(); M.localPlayerId = 0
     M.playerReligion[0] = "REL_OURS"
     M.players[0] = M.makePlayer{ id=0,
-        units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
+        units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN" } },
         cities = { { id=300, x=6, y=5, religion="REL_OURS" },      -- ours, already converted (skip)
                    { id=301, x=9, y=5, religion="REL_PAGAN" } } }  -- ours, unconverted, dist 4
@@ -821,6 +821,53 @@ do
     local diag = AutoBattle_LastDiag()
     check("Used-up exclusion appears on the diag string as 'usedUp'",
         diag:find("excluded: usedUp 1") ~= nil, diag)
+end
+
+-- -------------------------------------------------------------------------
+-- 31e. Unit on ALERT (auto-wake on enemy sighted): the engine reports the
+--      SAME ActivityTypes.ACTIVITY_SLEEP as plain Sleep -- there is no
+--      distinct Lua-visible activity value for Alert. Confirmed in-game:
+--      Sleep/Fortify units render greyed out (IsReadyToMove()=false), while a
+--      woken/idling-Alert unit renders white/active (IsReadyToMove()=true).
+--      This unit must NOT be excluded -- it should engage the visible enemy.
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=50, activityType="ACTIVITY_SLEEP", isReadyToMove=true } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    AutoBattle_RunMelee()
+    local op = firstOp(100)
+    check("Alert unit (SLEEP activity but ready-to-move) still engages",
+        op and op.op == "MOVE_TO", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 31f. Genuinely Sleep'd/parked unit: ACTIVITY_SLEEP AND greyed out
+--      (isReadyToMove=false, the default confirmed in-game for Sleep/Fortify).
+--      Must still be excluded -- this is the case IsReadyToMove() must NOT
+--      accidentally un-exclude, or a player's manually-parked unit would get
+--      swept into combat against their wishes.
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=50, activityType="ACTIVITY_SLEEP", isReadyToMove=false } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    AutoBattle_RunMelee()
+    check("Genuinely Sleep'd unit (greyed out) is still excluded (no ops)",
+        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+    local diag = AutoBattle_LastDiag()
+    check("Sleep exclusion still appears on the diag string as 'asleep'",
+        diag:find("excluded: asleep 1") ~= nil, diag)
 end
 
 -- -------------------------------------------------------------------------

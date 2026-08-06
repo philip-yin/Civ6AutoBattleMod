@@ -77,12 +77,18 @@ end
 --
 --  m_diag counts, reset at the start of each pass by RunPassFiltered. Shared by
 --  BOTH Run Now (ExecuteCombat) and Run Ranged (ExecuteRanged):
---    fired    -- units that actually attacked (in place or move&shoot committed)
---    noTarget -- units that found ZERO candidate targets (filter dropped them?)
---    refused  -- an attack/reposition/advance the engine refused (LOS, blocked
---                tile, ZoC, etc.) -- these units fall back to fortify/hold
---    moved    -- units that repositioned toward a target (advance / move&shoot)
---    held     -- units that just held (no viable action, or every move refused)
+--    fired     -- units that actually attacked (in place or move&shoot committed)
+--    noTarget  -- units that found ZERO candidate targets (filter dropped them?)
+--    refused   -- an attack/reposition/advance the engine refused (LOS, blocked
+--                 tile, ZoC, etc.) -- these units fall back to fortify/hold
+--    moved     -- units that repositioned toward a target (advance / move&shoot)
+--    held      -- units that just held (no viable action, or every move refused)
+--    deferred  -- units never even attempted THIS click because the engine
+--                 reported busy partway through the pass (see RunPassFiltered:
+--                 RequestOperation is async, so an earlier unit's still-
+--                 resolving move can leave later units deciding against stale
+--                 board state -- we stop rather than risk that). Click again;
+--                 these units get a fresh turn once the engine catches up.
 --
 --  m_excluded: units matched `want(u)` (right family for this button) but were
 --  dropped BEFORE ever being processed -- IsEligibleUnit rejected them (asleep,
@@ -92,12 +98,22 @@ end
 --  why), which made "a ready-looking unit did nothing" undiagnosable without a
 --  log file. Keyed by reason string (see IsEligibleUnit's second return value).
 -- ---------------------------------------------------------------------------
-local m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+local m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
 local m_excluded = {}
 
+-- Per-unit trace lines for THIS pass, richer than the aggregate m_diag counts.
+-- Requested explicitly: a bare "moved 1" doesn't distinguish "engine accepted
+-- the move and the unit's position actually changed" from "engine reported
+-- success but the unit is still standing where it started" (or from a
+-- core-busy status at the moment of the attempt) -- this records exactly that,
+-- per unit, so it's diagnosable from the panel with no Lua.log needed.
+local m_traceLines = {}
+local MAX_TRACE_LINES = 8  -- cap so the status line can't grow unbounded
+
 local function DiagReset()
-    m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+    m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
     m_excluded = {}
+    m_traceLines = {}
 end
 
 local function Diag(key)
@@ -106,32 +122,6 @@ end
 
 local function DiagExclude(reason)
     m_excluded[reason] = (m_excluded[reason] or 0) + 1
-end
-
--- Public: a compact one-line summary of the last pass, for the panel status line.
--- e.g. "fired 2 | held 1 | no target 1 | excluded: fortified 1". Empty string
--- if nothing of note. The "excluded" breakdown answers "why did a unit that
--- looked ready do nothing at all" without needing Lua.log.
-function AutoBattle_LastDiag()
-    local parts = {}
-    if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
-    if m_diag.moved    > 0 then table.insert(parts, "moved "     .. m_diag.moved)    end
-    if m_diag.refused  > 0 then table.insert(parts, "refused "   .. m_diag.refused)  end
-    if m_diag.noTarget > 0 then table.insert(parts, "no target " .. m_diag.noTarget) end
-    if m_diag.held     > 0 then table.insert(parts, "held "      .. m_diag.held)     end
-
-    local excludeKeys = {}
-    for reason, _ in pairs(m_excluded) do table.insert(excludeKeys, reason) end
-    table.sort(excludeKeys)  -- deterministic order
-    if #excludeKeys > 0 then
-        local exParts = {}
-        for _, reason in ipairs(excludeKeys) do
-            table.insert(exParts, reason .. " " .. m_excluded[reason])
-        end
-        table.insert(parts, "excluded: " .. table.concat(exParts, ", "))
-    end
-
-    return table.concat(parts, " | ")
 end
 
 -- Safe read of a value for logging (never errors, never nil-crashes concat).
@@ -153,6 +143,64 @@ local function Try(label, fn)
         return false, nil
     end
     return true, res
+end
+
+-- Record one unit's outcome for this pass. `fromX/fromY` are the position
+-- BEFORE the operation was attempted; positions are re-read via GetX/GetY
+-- AFTER, so a "moved" outcome whose before/after coordinates are IDENTICAL is
+-- immediately visible -- that's the "engine said ok but nothing happened" case.
+local function Trace(pUnit, action, fromX, fromY, opResult)
+    if #m_traceLines >= MAX_TRACE_LINES then return end
+    local okX, curX = pcall(function() return pUnit:GetX() end)
+    local okY, curY = pcall(function() return pUnit:GetY() end)
+    local toX = (okX and curX) or "?"
+    local toY = (okY and curY) or "?"
+    local okBusy, busy = false, nil
+    if UI ~= nil and UI.IsGameCoreBusy ~= nil then
+        okBusy, busy = pcall(function() return UI.IsGameCoreBusy() end)
+    end
+    local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
+    table.insert(m_traceLines, string.format(
+        "u%s %s (%s,%s)->(%s,%s) %s%s busy=%s",
+        S(pUnit:GetID()), S(action), S(fromX), S(fromY), S(toX), S(toY),
+        opResult and "ok" or "REJECTED",
+        (opResult and action == "advance" and not moved) and "-NOMOVE" or "",
+        (okBusy and tostring(busy)) or "?"))
+end
+
+-- Public: a compact one-line summary of the last pass, for the panel status line.
+-- e.g. "fired 2 | held 1 | no target 1 | excluded: fortified 1". Empty string
+-- if nothing of note. The "excluded" breakdown answers "why did a unit that
+-- looked ready do nothing at all" without needing Lua.log. Per-unit trace lines
+-- (see Trace()) are appended after, one per line, for deep debugging of a
+-- specific stuck unit (from/to coords, engine result, core-busy status).
+function AutoBattle_LastDiag()
+    local parts = {}
+    if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
+    if m_diag.moved    > 0 then table.insert(parts, "moved "     .. m_diag.moved)    end
+    if m_diag.refused  > 0 then table.insert(parts, "refused "   .. m_diag.refused)  end
+    if m_diag.noTarget > 0 then table.insert(parts, "no target " .. m_diag.noTarget) end
+    if m_diag.held     > 0 then table.insert(parts, "held "      .. m_diag.held)     end
+    if m_diag.deferred > 0 then table.insert(parts, "deferred "  .. m_diag.deferred) end
+
+    local excludeKeys = {}
+    for reason, _ in pairs(m_excluded) do table.insert(excludeKeys, reason) end
+    table.sort(excludeKeys)  -- deterministic order
+    if #excludeKeys > 0 then
+        local exParts = {}
+        for _, reason in ipairs(excludeKeys) do
+            table.insert(exParts, reason .. " " .. m_excluded[reason])
+        end
+        table.insert(parts, "excluded: " .. table.concat(exParts, ", "))
+    end
+
+    local summary = table.concat(parts, " | ")
+    if #m_traceLines > 0 then
+        local trace = table.concat(m_traceLines, " / ")
+        if summary ~= "" then return summary .. " || " .. trace end
+        return trace
+    end
+    return summary
 end
 
 local function Clamp01(v)
@@ -1428,9 +1476,16 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     -- of the same type converge on one target) left the unit doing NOTHING at
     -- all: no move, no attack, no fortify, and no diagnostic trace anywhere.
     -- Diag() calls mirror ExecuteRanged's vocabulary so Run Now's status line
-    -- is just as informative as Run Ranged's.
+    -- is just as informative as Run Ranged's. Trace() additionally records
+    -- exact before/after coordinates + engine result + core-busy status per
+    -- unit, so "moved" vs. "engine said ok but position didn't change" is
+    -- directly visible on the panel without needing Lua.log.
+    local fromX, fromY = pUnit:GetX(), pUnit:GetY()
+
     if action == "attack" then
-        if DoAttackAt(pUnit, tgt.x, tgt.y) then
+        local ok = DoAttackAt(pUnit, tgt.x, tgt.y)
+        Trace(pUnit, "attack", fromX, fromY, ok)
+        if ok then
             Diag("fired")
         else
             Diag("refused")
@@ -1445,7 +1500,9 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         -- let OnUnitMoveComplete issue the RANGE_ATTACK from the new position.
         if fx ~= nil then
             m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
-            if DoMoveTo(pUnit, fx, fy) then
+            local ok = DoMoveTo(pUnit, fx, fy)
+            Trace(pUnit, "moveattack", fromX, fromY, ok)
+            if ok then
                 Diag("moved")
             else
                 m_pendingShots[pUnit:GetID()] = nil
@@ -1455,7 +1512,9 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
             end
         else
             -- No firing plot resolved; fall back to attacking in place if we can.
-            if DoAttackAt(pUnit, tgt.x, tgt.y) then
+            local ok = DoAttackAt(pUnit, tgt.x, tgt.y)
+            Trace(pUnit, "moveattack-fallback-attack", fromX, fromY, ok)
+            if ok then
                 Diag("fired")
             else
                 Diag("refused")
@@ -1467,7 +1526,9 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     elseif action == "advance" then
         -- Advance using FULL movement toward the target (no 1-tile cap). If nothing
         -- was attackable this turn, close the distance as far as movement allows.
-        if AdvanceTowardTarget(pUnit, tgt) then
+        local ok = AdvanceTowardTarget(pUnit, tgt)
+        Trace(pUnit, "advance", fromX, fromY, ok)
+        if ok then
             Diag("moved")
         else
             -- Every reachable tile was rejected (commonly: all occupied by
@@ -1479,6 +1540,7 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         end
 
     else -- fortify
+        Trace(pUnit, "fortify", fromX, fromY, true)
         Diag("held")
         DoHold(pUnit)
     end
@@ -1493,13 +1555,31 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
     local target = ChooseConversionTarget(convTargets)
     if target == nil then return false end
 
-    local dist = PlotDistance(pUnit:GetX(), pUnit:GetY(), target.x, target.y)
-    DebugLog(string.format("  spread: %s city @(%s,%s) dist=%s",
-        target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist)))
-    if dist <= 1 then
-        if DoSpreadReligion(pUnit) then return true end
+    -- Missionaries are consumed (auto-deleted) the instant their last spread
+    -- charge is used (confirmed: Civilopedia's Great People chapter states this
+    -- is the standard rule for ALL charge-based units, same as Builders), so a
+    -- LIVE Missionary can never actually be at 0 charges -- this is a defensive
+    -- check only, not expected to ever fire. Logged anyway for visibility.
+    local charges = SpreadChargesLeft(pUnit)
+    local fromX, fromY = pUnit:GetX(), pUnit:GetY()
+    if charges <= 0 then
+        DebugLog("  spread: 0 charges left (unexpected for a live unit) -> fortify")
+        Trace(pUnit, "spread-no-charges", fromX, fromY, true)
+        return false
     end
-    AdvanceTowardTarget(pUnit, target)
+
+    local dist = PlotDistance(pUnit:GetX(), pUnit:GetY(), target.x, target.y)
+    DebugLog(string.format("  spread: %s city @(%s,%s) dist=%s charges=%s",
+        target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist), S(charges)))
+    if dist <= 1 then
+        local ok = DoSpreadReligion(pUnit)
+        Trace(pUnit, "spread", fromX, fromY, ok)
+        if ok then return true end
+        DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> advance instead")
+    end
+    if not AdvanceTowardTarget(pUnit, target) then
+        Trace(pUnit, "spread-advance-blocked", fromX, fromY, false)
+    end
     return true
 end
 
@@ -1652,13 +1732,17 @@ local function ExecuteRanged(pUnit, selfPlayerId, mode)
         return false
     end
 
+    local fromX, fromY = pUnit:GetX(), pUnit:GetY()
+
     -- 1) Shoot in place if the target is already in range. CanAttackNow is a pure
     --    hex-distance test (no LOS), so the engine can still refuse the shot; only
     --    treat it as done if DoAttackAt actually succeeded. On refusal, fall through
     --    to the reposition-and-shoot branch (a firing plot may have a clear line).
     if CanAttackNow(pUnit, tgt) then
         DebugLog(string.format("  ranged: fire in place at (%s,%s) dist=%s", S(tgt.x), S(tgt.y), S(tgt.dist)))
-        if DoAttackAt(pUnit, tgt.x, tgt.y) then
+        local ok = DoAttackAt(pUnit, tgt.x, tgt.y)
+        Trace(pUnit, "ranged-attack", fromX, fromY, ok)
+        if ok then
             Diag("fired")
             return true
         end
@@ -1686,7 +1770,9 @@ local function ExecuteRanged(pUnit, selfPlayerId, mode)
         local plots = RankedFiringPlots(pUnit, tgt)
         for _, fp in ipairs(plots) do
             m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
-            if DoMoveTo(pUnit, fp.x, fp.y) then
+            local ok = DoMoveTo(pUnit, fp.x, fp.y)
+            if ok then
+                Trace(pUnit, "ranged-moveshoot", fromX, fromY, true)
                 DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
                     S(fp.x), S(fp.y), S(tgt.x), S(tgt.y)))
                 Diag("moved")
@@ -1703,13 +1789,18 @@ local function ExecuteRanged(pUnit, selfPlayerId, mode)
     --    turn after turn waiting for the enemy to wander into range. Air units
     --    never path across tiles (rebasing is a strategic DEPLOY left to you),
     --    so skip this for them -- they only ever strike-in-range or hold.
-    if not IsAir(pUnit) and AdvanceTowardTarget(pUnit, tgt) then
-        DebugLog("  ranged: no firing plot in range -> advance toward target")
-        Diag("moved")
-        return true
+    if not IsAir(pUnit) then
+        local ok = AdvanceTowardTarget(pUnit, tgt)
+        if ok then
+            Trace(pUnit, "ranged-advance", fromX, fromY, true)
+            DebugLog("  ranged: no firing plot in range -> advance toward target")
+            Diag("moved")
+            return true
+        end
     end
 
     -- 4) No shot and no clear firing move or advance -> wait.
+    Trace(pUnit, "ranged-hold", fromX, fromY, true)
     DebugLog("  ranged: cannot shoot, reposition, or advance -> wait")
     Diag("held")
     DoHold(pUnit)
@@ -1810,14 +1901,39 @@ local function RunPassFiltered(label, want, act)
         return a.unit:GetID() < b.unit:GetID()
     end)
 
+    -- UnitManager.RequestOperation is ASYNC: issuing unit A's move does not mean
+    -- the engine has resolved it (updated position, GetReachableMovement, etc.)
+    -- by the time we move on to unit B in this same loop -- Lua here has no way
+    -- to block/yield until the engine catches up. The base game's own UI (e.g.
+    -- SelectedUnit.lua's RealizeMoveRadius) explicitly re-checks
+    -- IsGameCoreBusy() before trusting reachability/position data, rather than
+    -- assuming a prior operation has resolved. We do the same: re-check busy
+    -- before EACH unit (not just once at pass-start), so once an earlier unit's
+    -- move leaves the engine transiently busy, we STOP issuing further
+    -- decisions against what could be stale board state for this pass, instead
+    -- of silently producing wrong/no-op moves for the rest of the unit list.
+    -- The deferred units simply get another chance on the next click.
+    local deferred = 0
     for _, entry in ipairs(unitList) do
         local pUnit = entry.unit
+
+        if UI ~= nil and UI.IsGameCoreBusy ~= nil then
+            local ok, busy = Try("IsGameCoreBusy", function() return UI.IsGameCoreBusy() end)
+            if ok and busy == true then
+                deferred = #unitList - processed
+                DebugLog(("  game core busy mid-pass; deferring remaining %d unit(s)."):format(deferred))
+                break
+            end
+        end
+
         local ok = Try("ProcessOne", function() return act(pUnit, selfPlayerId) end)
         if ok then processed = processed + 1 end
     end
 
-    Log(("%s pass: acted on %d unit(s), skipped %d already-used")
-        :format(label, processed, skipped))
+    for i = 1, deferred do Diag("deferred") end
+
+    Log(("%s pass: acted on %d unit(s), skipped %d already-used, deferred %d (core busy)")
+        :format(label, processed, skipped, deferred))
     return processed
 end
 

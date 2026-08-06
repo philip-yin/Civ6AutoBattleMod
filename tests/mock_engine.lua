@@ -24,6 +24,8 @@ M.eventHandlers = {}
 
 -- Scenario state
 M.gameCoreBusy = false
+M.busyAfterOps = nil  -- if set to N, IsGameCoreBusy() becomes true once #M.issuedOps >= N
+                      -- (models the engine going busy MID-pass, after N ops issued)
 M.localPlayerId = 0
 M.players = {}       -- id -> mockPlayer
 M.warMatrix = {}     -- "a:b" -> true
@@ -102,6 +104,11 @@ function M.makeUnit(spec)
     -- them, so a stale nonzero fortifyTurns + ACTIVITY_AWAKE (woken via Cancel)
     -- can be modeled explicitly.
     function u:GetFortifyTurns() return s.fortifyTurns or 0 end
+    -- Models the base game's own "is this unit greyed out" signal (confirmed
+    -- in-game: Sleep/Fortify -> greyed/false; woken -> white/true). Defaults to
+    -- true (ready) unless a scenario explicitly parks the unit, matching a
+    -- normal active unit.
+    function u:IsReadyToMove() return s.isReadyToMove == nil or s.isReadyToMove == true end
     M.activityTypes[s.id] = spec.activityType or "ACTIVITY_AWAKE"
     return u
 end
@@ -235,7 +242,10 @@ function M.install()
     end }) }
 
     UI = {
-        IsGameCoreBusy = function() return M.gameCoreBusy end,
+        IsGameCoreBusy = function()
+            if M.busyAfterOps ~= nil and #M.issuedOps >= M.busyAfterOps then return true end
+            return M.gameCoreBusy
+        end,
         PlaySound = function() end,
     }
 
@@ -306,6 +316,7 @@ function M.reset()
     M.issuedOps = {}
     M.eventHandlers = {}
     M.gameCoreBusy = false
+    M.busyAfterOps = nil
     M.localPlayerId = 0
     M.players = {}
     M.warMatrix = {}
