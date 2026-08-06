@@ -50,6 +50,18 @@ end
 -- ---------------------------------------------------------------------------
 --  Handlers
 -- ---------------------------------------------------------------------------
+-- Hard-wrap: insert a newline every 20 characters, regardless of word
+-- boundaries. Requested for the debug diag text, which can otherwise run past
+-- the panel's WrapWidth as one long unbroken line (e.g. long "excluded: ..."
+-- breakdowns) since it's plain text, not word-wrapped loc content.
+local function HardWrap(s, chunkSize)
+    local parts = {}
+    for i = 1, #s, chunkSize do
+        table.insert(parts, s:sub(i, i + chunkSize - 1))
+    end
+    return table.concat(parts, "\n")
+end
+
 -- Update the status line from a pass result (units acted on). Since this build
 -- doesn't write Lua.log, we also append the brain's per-pass outcome breakdown
 -- (fired / moved / refused / no target / held) so a failure is diagnosable
@@ -59,8 +71,8 @@ local function ShowResult(count)
     if AutoBattle_LastDiag ~= nil then diag = AutoBattle_LastDiag() or "" end
 
     if diag ~= "" then
-        -- Show the raw breakdown directly (already human-readable).
-        Controls.StatusLabel:SetText(diag)
+        -- Show the raw breakdown, hard-wrapped every 20 characters.
+        Controls.StatusLabel:SetText(HardWrap(diag, 20))
     elseif (count or 0) > 0 then
         Controls.StatusLabel:LocalizeAndSetText("LOC_AUTOBATTLE_STATUS_RAN", count)
     else

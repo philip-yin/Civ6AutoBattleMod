@@ -74,7 +74,7 @@
                 </Stack>
 
                 <Label ID="StatusLabel" String="LOC_AUTOBATTLE_STATUS_IDLE" FontSize="12"
-                       ColorSet="BodyTextCool" Anchor="L,T" Offset="0,10" />
+                       Color="0,0,0,255" Anchor="L,T" Offset="0,10" />
 
             </Stack>
         </Container>
