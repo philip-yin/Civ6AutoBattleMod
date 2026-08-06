@@ -6,8 +6,9 @@
 --  PlayersVisibility, unit operations and the map -- all the APIs this needs.
 --  The panel calls our globals directly (same Lua VM):
 --
---      AutoBattle_SetConfig(enabled, mode)   -- panel -> here
---      AutoBattle_RunPass() -> count         -- panel -> here, returns units acted on
+--      AutoBattle_SetConfig(mode)             -- panel -> here
+--      AutoBattle_RunMelee() -> count         -- panel -> here, melee/cav/religious pass
+--      AutoBattle_RunRanged() -> count        -- panel -> here, ranged/siege/air pass
 --
 --  Modes:
 --      1 = Aggressive   2 = In-Between   3 = Passive
@@ -161,12 +162,22 @@ local function IsEligibleUnit(pUnit)
     -- GetFortifyTurns > 0), so ALL fortified units are skipped -- including ones the
     -- mod auto-fortified as its "hold" action, which therefore won't auto re-engage
     -- until you wake them. Sleep is the durable "don't touch this unit" marker.
+    --
+    -- GetFortifyTurns() is NOT a live "is fortified now" flag -- it's a cumulative
+    -- turn counter that can stay nonzero after the unit is woken (e.g. via Cancel).
+    -- The stock UI never trusts it alone (see UnitPanel.lua/WorldTracker.lua's
+    -- "activityType ~= ACTIVITY_AWAKE and GetFortifyTurns() > 0" pattern for the
+    -- fortify defense icon) -- we mirror that here, or a woken unit with a stale
+    -- nonzero counter gets wrongly skipped forever with no trace in the log.
+    local act, okAct = nil, false
     if UnitManager ~= nil and UnitManager.GetActivityType ~= nil and ActivityTypes ~= nil then
-        local ok, act = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
-        if ok and act == ActivityTypes.ACTIVITY_SLEEP then return false end
+        local ok, a = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
+        if ok then act = a; okAct = true end
+        if ok and a == ActivityTypes.ACTIVITY_SLEEP then return false end
     end
     local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
-    if okF and fort ~= nil and fort > 0 then return false end
+    local isAwake = okAct and ActivityTypes ~= nil and act == ActivityTypes.ACTIVITY_AWAKE
+    if okF and fort ~= nil and fort > 0 and not isAwake then return false end
 
     -- Has offensive capability of some kind?
     local combat = pUnit:GetCombat()
@@ -1670,9 +1681,10 @@ local function ExecuteRanged(pUnit, selfPlayerId)
     -- 3) No firing plot reachable this turn: the target is visible but out of
     --    movement+range. Don't just sit -- close the distance with full movement
     --    (same helper melee's "advance" action uses) so the unit isn't frozen
-    --    turn after turn waiting for the enemy to wander into range. Only fall
-    --    back to wait if even that move fails/rejects.
-    if AdvanceTowardTarget(pUnit, tgt) then
+    --    turn after turn waiting for the enemy to wander into range. Air units
+    --    never path across tiles (rebasing is a strategic DEPLOY left to you),
+    --    so skip this for them -- they only ever strike-in-range or hold.
+    if not IsAir(pUnit) and AdvanceTowardTarget(pUnit, tgt) then
         DebugLog("  ranged: no firing plot in range -> advance toward target")
         Diag("moved")
         return true

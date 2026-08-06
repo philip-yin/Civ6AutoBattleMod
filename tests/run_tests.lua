@@ -47,6 +47,15 @@ local function opsFor(unitId)
 end
 local function firstOp(unitId) return opsFor(unitId)[1] end
 
+-- Run both passes (as a player clicking Run Now then Run Ranged would). Each
+-- pass filters by unit family internally, so calling both is harmless and
+-- exercises whichever pass actually owns the units in a given scenario.
+local function runBothPasses()
+    local n1 = AutoBattle_RunMelee() or 0
+    local n2 = AutoBattle_RunRanged() or 0
+    return n1 + n2
+end
+
 -- Common scenario helper: one of our units vs one enemy unit, at war, visible.
 -- ourSpec/enemySpec are unit specs; combat is a makeCombatResult(...) or nil.
 local function scenario(ourSpec, enemySpec, combat, mode)
@@ -61,8 +70,8 @@ local function scenario(ourSpec, enemySpec, combat, mode)
     if combat then M.combatResults[ourSpec.id .. ":" .. enemySpec.id] = combat end
     M.install()
     loadLogic()
-    AutoBattle_SetConfig(true, mode or MODE_BALANCED)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(mode or MODE_BALANCED)
+    runBothPasses()
 end
 
 realPrint("=== AutoBattle logic tests ===")
@@ -184,16 +193,20 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 9. Military unit CAN target enemy religious unit
+-- 9. Military unit CAN target an enemy religious COMBATANT (e.g. Inquisitor,
+--    which carries real combat strength alongside religious strength). A
+--    spread-only religious civilian (0 combat/ranged) is deliberately excluded
+--    -- see GatherEnemyTargets -- so this unit must have nonzero combat to be
+--    a valid military target at all.
 -- -------------------------------------------------------------------------
 scenario(
     { x=5, y=5, combat=50 },                         -- our warrior
-    { x=6, y=5, religious=40 },                        -- enemy apostle
+    { x=6, y=5, religious=40, combat=30 },             -- enemy Inquisitor (fights)
     M.makeCombatResult(0, 0, 40, 0),
     MODE_AGGRESSIVE)
 do
     local op = firstOp(100)
-    check("Military unit can attack enemy religious unit",
+    check("Military unit can attack enemy religious combatant",
         op and op.op == "MOVE_TO", op and op.op or "no op")
 end
 
@@ -212,8 +225,8 @@ do
     M.combatResults["100:200"] = M.makeCombatResult(0, 95, 30, 0)  -- kills 200 (95+30>=100... wait 125>=100 yes)
     M.combatResults["100:201"] = M.makeCombatResult(0, 0, 60, 0)   -- 60 dmg but not a kill
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Kill-first: targets killable enemy over higher-damage one",
         op and op.op == "RANGE_ATTACK" and op.x == 6 and op.y == 5,
@@ -235,8 +248,8 @@ do
     M.combatResults["100:200"] = M.makeCombatResult(0, 0, 30, 0)  -- equal damage
     M.combatResults["100:201"] = M.makeCombatResult(0, 0, 30, 0)  -- equal damage
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Distance tie-break: attacks closer of equal-damage targets",
         op and op.x == 7 and op.y == 5,
@@ -268,8 +281,8 @@ do
     M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
     M.gameCoreBusy = true
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    local n = AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    local n = runBothPasses()
     check("Busy core defers pass (0 ops, returns 0)", #M.issuedOps == 0 and n == 0,
         tostring(#M.issuedOps) .. " ops, n=" .. tostring(n))
 end
@@ -284,8 +297,8 @@ do
     M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
     -- no war set
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Not at war -> no target -> fortify",
         op and op.op == "FORTIFY", op and op.op or "no op")
@@ -302,8 +315,8 @@ do
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     M.visibleDefault = false   -- everything fogged
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Fogged enemy ignored -> fortify",
         op and op.op == "FORTIFY", op and op.op or "no op")
@@ -336,8 +349,8 @@ do
     M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
     M.disallowOps["100:MOVE_TO"] = true   -- engine forbids the attack-move
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     check("Disallowed MOVE_TO is not issued",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
 end
@@ -357,28 +370,74 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 19. Air unit with target OUT of range -> fortify (never advances/deploys)
+-- 19. Air unit with target OUT of range -> fortify (never advances/deploys).
+--     Air units are IsRangedFamily, so runBothPasses() drives this through
+--     Run Ranged's ExecuteRanged too -- a reachable plot is registered so
+--     AdvanceTowardTarget WOULD succeed if the IsAir guard there were ever
+--     removed, making this test actually catch that regression.
 -- -------------------------------------------------------------------------
-scenario(
-    { x=5, y=5, ranged=60, range=4, domain="DOMAIN_AIR", unitType="UNIT_BOMBER" },
-    { x=15, y=5, combat=40 },                         -- far out of range
-    nil,
-    MODE_AGGRESSIVE)
 do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, ranged=60, range=4, domain="DOMAIN_AIR", unitType="UNIT_BOMBER" } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=15, y=5, combat=40 } } }             -- far out of range
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }                     -- would let ground advance succeed
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Air unit out of range -> fortify (no advance)",
         op and op.op == "FORTIFY", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
--- 20. Naval melee ship attacks adjacent via MOVE_TO+ATTACK
+-- 19b. Ground ranged unit with target out of movement+range -> ADVANCES
+--      (full movement) instead of holding. Enemy is far beyond range+reach;
+--      the only reachable plot (6,5) is still outside firing range of it, so
+--      ExecuteRanged's step 3 (advance fallback) should fire a MOVE_TO there.
 -- -------------------------------------------------------------------------
-scenario(
-    { x=5, y=5, combat=45, domain="DOMAIN_SEA", unitType="UNIT_GALLEY" },
-    { x=6, y=5, combat=30, domain="DOMAIN_SEA", unitType="UNIT_GALLEY", id=200 },
-    M.makeCombatResult(0, 0, 40, 15),
-    MODE_AGGRESSIVE)
 do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, ranged=50, range=2 } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=20, y=5, combat=40 } } }             -- far out of range+reach
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }                     -- still nowhere near range 2 of (20,5)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Ranged unit out of range advances toward distant target (no hold)",
+        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 20. Naval melee ship attacks adjacent via MOVE_TO+ATTACK. Both tiles must be
+--     marked water -- the cross-domain melee filter checks the TARGET's plot,
+--     and the mock defaults every plot to land.
+-- -------------------------------------------------------------------------
+do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=45, domain="DOMAIN_SEA", unitType="UNIT_GALLEY" } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=6, y=5, combat=30, domain="DOMAIN_SEA", unitType="UNIT_GALLEY" } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0, 0, 40, 15)
+    M.waterPlots["5,5"] = true
+    M.waterPlots["6,5"] = true
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Naval melee ship attacks via MOVE_TO+ATTACK",
         op and op.op == "MOVE_TO" and op.mod == UnitOperationMoveModifiers.ATTACK,
@@ -412,8 +471,8 @@ do
                     formationClass="FORMATION_CLASS_CIVILIAN", promotionClass=nil } },
         cities = { { id=300, x=6, y=5, religion="REL_PAGAN" } } }  -- our unconverted city, adjacent
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Missionary adjacent to unconverted city -> SPREAD_RELIGION",
         op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
@@ -433,8 +492,8 @@ do
     M.plots[6005] = { x=6, y=5 }
     M.reachablePlots[100] = { 6005 }
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Missionary advances toward distant unconverted city",
         op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
@@ -457,8 +516,8 @@ do
     M.plots[6005]={x=6,y=5}; M.plots[8005]={x=8,y=5}
     M.reachablePlots[100] = { 6005, 8005 }
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     -- Should head toward OUR unconverted city (9,5) -> nearest reachable is (8,5),
     -- NOT toward the closer foreign city (7,5) -> (6,5).
@@ -483,8 +542,8 @@ do
     M.revealedDefault = true
     M.revealed["8,5"] = false  -- fog just past (7,5)
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     local op = firstOp(100)
     check("Missionary with nothing to convert explores toward fog edge",
         op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
@@ -516,8 +575,8 @@ local function apostleScenario(opts)
     for idx, p in pairs(opts.plots or {}) do M.plots[idx] = p end
     if opts.fog then for k,v in pairs(opts.fog) do M.revealed[k]=v end end
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, opts.mode)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(opts.mode)
+    runBothPasses()
 end
 
 -- -------------------------------------------------------------------------
@@ -597,6 +656,45 @@ do
 end
 
 -- -------------------------------------------------------------------------
+-- 31b. Genuinely fortified unit (still ACTIVITY_HOLD, fortifyTurns>0) is
+--      correctly skipped -- no ops issued at all (not even FORTIFY again).
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=50, fortifyTurns=3, activityType="ACTIVITY_HOLD" } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    check("Genuinely fortified unit is skipped (no ops)",
+        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+end
+
+-- -------------------------------------------------------------------------
+-- 31c. Unit woken via Cancel (ACTIVITY_AWAKE) but with a STALE nonzero
+--      fortifyTurns counter (GetFortifyTurns is cumulative, not a live
+--      "is fortified" flag -- see IsEligibleUnit) -- must still act.
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=50, fortifyTurns=3, activityType="ACTIVITY_AWAKE" } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Woken unit with stale fortifyTurns still acts (not skipped)",
+        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
 -- 32. Scout (recon, Combat=10) is EXCLUDED -> no ops issued
 -- -------------------------------------------------------------------------
 do
@@ -608,8 +706,8 @@ do
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     M.combatResults["100:200"]=M.makeCombatResult(0,0,20,40)
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     check("Scout (recon) is excluded from auto-battle",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
 end
@@ -625,8 +723,8 @@ do
     M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     M.install(); loadLogic()
-    AutoBattle_SetConfig(true, MODE_AGGRESSIVE)
-    AutoBattle_RunPass()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
     check("Builder (civilian) is excluded from auto-battle",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
 end

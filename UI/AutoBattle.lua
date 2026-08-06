@@ -4,8 +4,9 @@
 --  Draws the control panel. The auto-battle brain lives in AutoBattleLogic.lua,
 --  which we include() into this SAME Lua VM, so we call its functions directly:
 --
---      AutoBattle_SetConfig(mode)            -- push selected mode to the brain
---      AutoBattle_RunPass() -> count         -- run one pass, returns units acted on
+--      AutoBattle_SetConfig(mode)             -- push selected mode to the brain
+--      AutoBattle_RunMelee() -> count         -- run melee/cav/religious pass
+--      AutoBattle_RunRanged() -> count        -- run ranged/siege/air pass
 --
 --  (Both files run in the InGame UI context, where CombatManager / UnitManager /
 --  PlayersVisibility are bound. No LuaEvents bridge is needed because there is

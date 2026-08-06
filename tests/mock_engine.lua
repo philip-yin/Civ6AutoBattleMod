@@ -10,8 +10,8 @@
 --     M.reset()
 --     ... build a scenario ...
 --     dofile(".../AutoBattleLogic.lua")   -- installs globals into _G
---     AutoBattle_SetConfig(true, 1)
---     AutoBattle_RunPass()
+--     AutoBattle_SetConfig(1)
+--     AutoBattle_RunMelee(); AutoBattle_RunRanged()
 --     ... assert on M.issuedOps ...
 -- ===========================================================================
 
@@ -37,6 +37,8 @@ M.revealedDefault = true
 M.unitInfo = {}      -- unitType string -> { FormationClass=, PromotionClass= }
 M.reachablePlots = {}-- unitId -> { plotIndex, ... }
 M.plots = {}         -- plotIndex -> {x=, y=}
+M.waterPlots = {}    -- "x,y" -> true (default: everything is land unless set)
+M.activityTypes = {} -- unitId -> "ACTIVITY_AWAKE"|"ACTIVITY_SLEEP"|... (set by makeUnit)
 
 -- ---------------------------------------------------------------------------
 --  Enum tables (values don't matter, only identity/keys)
@@ -48,6 +50,8 @@ UnitOperationTypes = {
     PARAM_X = "PARAM_X", PARAM_Y = "PARAM_Y", PARAM_MODIFIERS = "PARAM_MODIFIERS",
 }
 UnitOperationMoveModifiers = { NONE = 0, ATTACK = 1, MOVE_IGNORE_UNEXPLORED_DESTINATION = 2 }
+ActivityTypes = { ACTIVITY_AWAKE = "ACTIVITY_AWAKE", ACTIVITY_SLEEP = "ACTIVITY_SLEEP",
+                   ACTIVITY_HOLD = "ACTIVITY_HOLD" }
 CombatTypes = { MELEE=1, RANGED=2, BOMBARD=3, RELIGIOUS=4, AIR=5, NONE=0 }
 CombatResultParameters = {
     ATTACKER="ATTACKER", DEFENDER="DEFENDER",
@@ -59,7 +63,8 @@ CombatResultParameters = {
 --  Mock unit factory
 -- ---------------------------------------------------------------------------
 -- spec: { id, x, y, combat, ranged, bombard, range, religious, damage,
---         unitType, domain, formationClass, promotionClass, moves, attacks, dead }
+--         unitType, domain, formationClass, promotionClass, moves, attacks, dead,
+--         fortifyTurns, activityType }
 function M.makeUnit(spec)
     local u = {}
     local s = spec
@@ -91,6 +96,13 @@ function M.makeUnit(spec)
     function u:IsDead() return s.dead == true end
     function u:IsDelayedDeath() return false end
     function u:GetDefenseStrength() return s.defense or 20 end
+    -- fortifyTurns models the engine's cumulative (not "currently fortified")
+    -- counter; activityType models UnitManager.GetActivityType's return value.
+    -- Both default to "not parked" (0 / ACTIVITY_AWAKE) unless a scenario sets
+    -- them, so a stale nonzero fortifyTurns + ACTIVITY_AWAKE (woken via Cancel)
+    -- can be modeled explicitly.
+    function u:GetFortifyTurns() return s.fortifyTurns or 0 end
+    M.activityTypes[s.id] = spec.activityType or "ACTIVITY_AWAKE"
     return u
 end
 
@@ -193,7 +205,8 @@ function M.install()
         end,
         GetPlot = function(x, y)
             return { GetIndex = function() return plotIndex(x, y) end,
-                     GetX = function() return x end, GetY = function() return y end }
+                     GetX = function() return x end, GetY = function() return y end,
+                     IsWater = function() return M.waterPlots[x .. "," .. y] == true end }
         end,
     }
 
@@ -227,6 +240,9 @@ function M.install()
     }
 
     UnitManager = {
+        GetActivityType = function(unit)
+            return M.activityTypes[unit:GetID()] or ActivityTypes.ACTIVITY_AWAKE
+        end,
         -- Returns true unless a scenario disallows this (unitId, op) pair.
         -- Also models the real rule that FORTIFY is military-only: a unit with no
         -- combat/ranged strength (religious/civilian) cannot fortify.
@@ -303,6 +319,8 @@ function M.reset()
     M.unitInfo = {}
     M.reachablePlots = {}
     M.plots = {}
+    M.waterPlots = {}
+    M.activityTypes = {}
 end
 
 return M

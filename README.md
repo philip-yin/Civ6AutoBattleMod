@@ -1,35 +1,61 @@
 # Auto Battle — Civ6 Mod
 
-Adds an in-game panel that makes your **military and religious units** fight and
-reposition automatically, with three behavior modes.
+Adds an in-game panel with two buttons — **Run Now** and **Run Ranged** — that
+each execute one pass over a different family of your **military and religious
+units**, fighting and repositioning them automatically. There is no auto-run: a
+pass only happens when you click one of the two buttons.
 
-## Modes
+## Run Now (melee / cavalry / religious) — three behavior modes
+
+The **Melee Mode** selector (Aggressive / In-Between / Passive) controls
+**only** the units handled by **Run Now**: melee, cavalry, and religious units
+(missionaries, apostles, inquisitors). It has no effect on ranged/siege/air
+units, which always use the fixed behavior described in **Run Ranged** below.
 
 | | Aggressive | In-Between | Passive |
 |---|---|---|---|
-| **Attack** | Always attack unless the preview says the unit would die | Fortify if < 50% HP, unless the attack kills | Only attack if it costs no HP, unless the attack kills (melee rarely attacks) |
-| **Fallback** | Fortify + heal | Fortify | Fortify |
-| **Move** | Advance to minimize distance to closest enemy | Only units > 50% HP advance | Never advance toward enemies |
-| **Ranged** | Attack in range; else move+attack; else advance | If move+attack possible, move to **max range** then fire | Fire only (no advance) |
+| **Attack** | Always attack unless the preview says the unit would die | Fortify if < 50% HP, unless the attack kills | Only attack if it costs no HP, unless the attack kills |
+| **Fallback** | Fortify | Fortify | Fortify |
+| **Move** | Advance (full movement) to minimize distance to closest enemy | Only units > 50% HP advance | Never advance toward enemies |
 
 The "hold" action is unit-appropriate: military units **Fortify** (defensive bonus
 + heal), but religious/civilian units can't fortify, so they **Sleep** (heal in
 place) or **Skip Turn** instead.
 
-**Target priority (all modes):** among **all currently-visible** enemies (any
-enemy on a tile your civ can see — no distance limit; fogged enemies are
-ignored), kill a target if possible; otherwise hit the target you deal the most
-damage to. **Distance breaks ties** — a closer enemy is preferred when two
-targets are otherwise equal. Priority order: **kill > damage > distance**.
+**Target priority:** among **all currently-visible** enemies (any enemy on a
+tile your civ can see — no distance limit; fogged enemies are ignored), Run
+Now always prefers the **closest reachable** target; among targets tied on
+distance, it prefers a predicted kill, then max damage, then lowest enemy HP.
+(Run Ranged uses a different priority — kill > damage > distance — described
+below.)
 
-**Execution order within a pass (one round per Run Now):** ranged (archers,
-crossbows) + air → siege (catapult, trebuchet, bombard) → melee/cavalry/religious
-→ support (medics, rams, towers). Ranged/siege fire **first** — in place, or
-repositioning only to an **empty** tile (never swapping places with a friendly);
-then melee attack an adjacent enemy or **step one tile** toward the target (in
-Aggressive/Balanced), so ranged fire ahead of the closing line. Support
-repositions last. Ties within a bucket are ordered by unit ID for determinism.
-Each Run Now is one such round; click again for the next.
+**Execution order within a Run Now pass:** melee/cavalry/religious units only
+(ranged/siege/air are excluded — they belong to Run Ranged), ordered by unit ID
+for determinism. Each click is one round: a unit attacks an adjacent enemy or
+advances toward the closest one using its **full movement** for that turn.
+Click again for the next round.
+
+## Run Ranged (ranged / siege / air) — single fixed behavior, no mode
+
+Ranged units (archers, crossbows, siege like catapults/trebuchets/bombards, and
+air units) are handled entirely separately from Run Now and ignore the Melee
+Mode selector. Mixing them into the mode pipeline made them either advance
+pointlessly or freeze, so they get their own button and a single behavior:
+
+1. **Shoot if already in range.**
+2. Else **move to an empty firing tile** (never swapping places with a
+   friendly) that would put the target in range, and fire once the move lands.
+3. Else, if no firing tile is reachable this turn, **advance** (full movement)
+   toward the target to close the distance for a future turn.
+4. Only if none of the above is possible does the unit **hold**.
+
+Target ranking is **kill > damage > distance**, computed separately for targets
+already in range vs. everything else — an in-range target is always preferred
+over repositioning. There is no HP/safety gate: if a shot is available, it is
+taken (ranged attacks normally draw no retaliation). Air units are an
+exception: they only ever strike-in-range or hold — they never path across
+tiles (rebasing is a strategic `DEPLOY` choice left to you), so step 2/3 above
+don't apply to them.
 
 **Which units the mod controls:** any unit with combat, ranged, or religious
 strength — **except recon units** (Scout/Skirmisher/Ranger), which are excluded
@@ -45,8 +71,10 @@ included by default.
   (`RANGE_ATTACK`). Bombard-strength ships are correctly treated as ranged.
   (Coastal-raid auto-pillage is not automated.)
 - **Air** — fighters/bombers strike in range via `AIR_ATTACK` and otherwise hold.
-  They never auto-advance or rebase (`DEPLOY` is a strategic choice left to you),
-  so an air unit only attacks a target already within its operational range.
+  They never advance or rebase (`DEPLOY` is a strategic choice left to you), so
+  an air unit only attacks a target already within its operational range —
+  unlike ground ranged units, an out-of-range enemy never makes an air unit
+  reposition.
 
 **Religious units:**
 
@@ -112,11 +140,19 @@ included by default.
 
 ## Use
 
-- A small **Auto Battle** panel appears at the top-right of the in-game HUD.
-- Tick **Enable Auto Battle** to run automatically at the start of each of your
-  turns.
-- Pick a mode: **Aggressive / In-Between / Passive** (highlighted = active).
-- **Run Now** executes one pass immediately, regardless of the Enable toggle.
+- A small **Auto Battle** panel is docked bottom-right, just above the End Turn
+  button. Click its title bar's toggle to minimize/expand the body.
+- Pick a **Melee Mode**: **Aggressive / In-Between / Passive** (highlighted =
+  active). This only affects the **Run Now** pass (see below).
+- **Run Now** executes one melee/cavalry/religious pass immediately, using the
+  selected Melee Mode.
+- **Run Ranged** executes one ranged/siege/air pass immediately, with its own
+  fixed behavior (no mode, see above).
+- There is no auto-run: nothing happens at turn start except clearing any
+  pending ranged shot from last turn — every pass is a manual button click.
+- The status line shows a breakdown of the last pass's outcome (e.g.
+  `fired 2 | moved 1 | held 1`) so you can tell at a glance whether units
+  actually acted.
 
 ## Debugging (important — first-run API check)
 
@@ -162,7 +198,7 @@ Runtime lines are prefixed `[AutoBattle]`; if you locate a `Lua.log`, filter wit
 
 ```
 [AutoBattle] logic loading...
-[AutoBattle] hooked LocalPlayerTurnBegin.
+[AutoBattle] hooked LocalPlayerTurnBegin (clears pending shots; no auto-run).
 [AutoBattle] hooked UnitMoveComplete (ranged move-then-fire).
 [AutoBattle] AutoBattle logic loaded OK.
 [AutoBattle] combat predictor = CombatManager.SimulateAttackVersus
@@ -193,8 +229,8 @@ operation issued. **If a unit ever does something unexpected, this is the answer
   this is why — paste the surrounding trace.
 - `op <name> FAILED` / `call failed (...)` — an API/param mismatch for your patch.
   Paste these; I'll fix the call.
-- `game core busy; deferring pass.` — a pass was skipped because the engine was
-  busy. Rare; if you see it at turn start, that turn's auto-run was skipped.
+- `game core busy; deferring pass.` — a Run Now/Run Ranged click was skipped
+  because the engine was busy. Rare; just click the button again.
 - `pending shot skipped: ... out of range after move` — a ranged unit repositioned
   but couldn't reach its target to fire. Expected sometimes; frequent = the
   firing-plot math needs a look.
@@ -230,8 +266,11 @@ panel.)
   this pass and fires on arrival (via `UnitMoveComplete`). If that event name
   differs on your patch, the unit still moves but won't fire until the next pass
   (the log will say so).
+- When a ranged unit's target is out of movement+range entirely (no firing plot
+  reachable this turn), it now advances toward the target with full movement
+  instead of holding — same as melee's advance, but ground-only: air units
+  still only strike-in-range or hold, since they don't path across tiles.
 - Religious combat uses the same target/decision pipeline; if the combat
   predictor doesn't model religious strength on your build, the fallback
   heuristic handles it (watch the log).
 - No custom art/icons yet — panel uses stock UI styles.
-```
