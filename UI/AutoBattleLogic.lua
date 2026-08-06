@@ -75,12 +75,14 @@ end
 --  shows on its status line -- so a failure ("saw the enemy but didn't fire")
 --  is self-explaining in-game with no log needed.
 --
---  m_diag counts, reset at the start of each pass by RunPassFiltered:
+--  m_diag counts, reset at the start of each pass by RunPassFiltered. Shared by
+--  BOTH Run Now (ExecuteCombat) and Run Ranged (ExecuteRanged):
 --    fired    -- units that actually attacked (in place or move&shoot committed)
 --    noTarget -- units that found ZERO candidate targets (filter dropped them?)
---    refused  -- units in range whose shot the engine refused (LOS/other)
+--    refused  -- an attack/reposition/advance the engine refused (LOS, blocked
+--                tile, ZoC, etc.) -- these units fall back to fortify/hold
 --    moved    -- units that repositioned toward a target (advance / move&shoot)
---    held     -- units that just held (no viable action)
+--    held     -- units that just held (no viable action, or every move refused)
 --
 --  m_excluded: units matched `want(u)` (right family for this button) but were
 --  dropped BEFORE ever being processed -- IsEligibleUnit rejected them (asleep,
@@ -1364,6 +1366,7 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
             -- No enemy in view, in ANY mode: hold. Civ6's own auto-explore
             -- handles idle wandering -- this mod doesn't duplicate it.
             DebugLog("  no visible enemy target -> fortify")
+            Diag("noTarget")
             DoHold(pUnit)
             return "acted"
         end
@@ -1383,6 +1386,7 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     if tgt == nil then
         if fortifyIfNoTarget then
             DebugLog("  no predictable target -> fortify")
+            Diag("noTarget")
             DoHold(pUnit)
             return "acted"
         end
@@ -1405,8 +1409,21 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     DebugLog("  decision: " .. S(action)
         .. ((fx ~= nil) and (" via (" .. S(fx) .. "," .. S(fy) .. ")") or ""))
 
+    -- Every branch below now checks its operation's actual result and falls
+    -- back to DoHold on failure -- previously a rejected/blocked op (e.g. every
+    -- reachable advance tile occupied by a friendly, common when several units
+    -- of the same type converge on one target) left the unit doing NOTHING at
+    -- all: no move, no attack, no fortify, and no diagnostic trace anywhere.
+    -- Diag() calls mirror ExecuteRanged's vocabulary so Run Now's status line
+    -- is just as informative as Run Ranged's.
     if action == "attack" then
-        DoAttackAt(pUnit, tgt.x, tgt.y)
+        if DoAttackAt(pUnit, tgt.x, tgt.y) then
+            Diag("fired")
+        else
+            Diag("refused")
+            DebugLog("  attack refused -> fortify")
+            DoHold(pUnit)
+        end
 
     elseif action == "moveattack" then
         -- Move to the firing plot this pass, then fire ONCE THE MOVE COMPLETES.
@@ -1415,18 +1432,41 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         -- let OnUnitMoveComplete issue the RANGE_ATTACK from the new position.
         if fx ~= nil then
             m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
-            DoMoveTo(pUnit, fx, fy)
+            if DoMoveTo(pUnit, fx, fy) then
+                Diag("moved")
+            else
+                m_pendingShots[pUnit:GetID()] = nil
+                Diag("refused")
+                DebugLog("  moveattack repositioning refused -> fortify")
+                DoHold(pUnit)
+            end
         else
             -- No firing plot resolved; fall back to attacking in place if we can.
-            DoAttackAt(pUnit, tgt.x, tgt.y)
+            if DoAttackAt(pUnit, tgt.x, tgt.y) then
+                Diag("fired")
+            else
+                Diag("refused")
+                DebugLog("  moveattack fallback attack refused -> fortify")
+                DoHold(pUnit)
+            end
         end
 
     elseif action == "advance" then
         -- Advance using FULL movement toward the target (no 1-tile cap). If nothing
         -- was attackable this turn, close the distance as far as movement allows.
-        AdvanceTowardTarget(pUnit, tgt)
+        if AdvanceTowardTarget(pUnit, tgt) then
+            Diag("moved")
+        else
+            -- Every reachable tile was rejected (commonly: all occupied by
+            -- friendlies already stacked toward the target). Hold instead of
+            -- silently doing nothing.
+            Diag("held")
+            DebugLog("  advance blocked (no reachable tile accepted) -> fortify")
+            DoHold(pUnit)
+        end
 
     else -- fortify
+        Diag("held")
         DoHold(pUnit)
     end
 

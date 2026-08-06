@@ -403,7 +403,10 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 17. CanStartOperation=false -> op is skipped (no phantom orders)
+-- 17. CanStartOperation=false -> the disallowed MOVE_TO itself is never issued
+--     (no phantom orders), and the unit falls back to FORTIFY instead of doing
+--     nothing at all (previously a refused attack left the unit completely
+--     idle with zero ops and zero trace).
 -- -------------------------------------------------------------------------
 do
     M.reset()
@@ -416,8 +419,37 @@ do
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
-    check("Disallowed MOVE_TO is not issued",
-        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+    local op = firstOp(100)
+    check("Disallowed MOVE_TO falls back to FORTIFY (not silently idle)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 17b. Melee unit with a non-adjacent target ("advance" decision) whose ONLY
+--      reachable tile is rejected by the engine (e.g. occupied by a friendly
+--      stack-mate -- exactly what happens when several units of the same type
+--      converge on one enemy: the front units block the back ones' path) now
+--      falls back to FORTIFY instead of doing nothing at all. This is the bug
+--      a player hit directly: "acted on N units" reported success, but the
+--      blocked units showed no move, no attack, no fortify -- because
+--      AdvanceTowardTarget's failure was silently discarded.
+-- -------------------------------------------------------------------------
+do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={ { id=100, x=5, y=5, combat=50 } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=8, y=5, combat=30 } } } -- dist 3: not adjacent
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    -- No combat result registered for 100:200 -- irrelevant here, target is non-adjacent.
+    M.plots[6005] = { x=6, y=5 }         -- the only reachable tile, closer to the enemy
+    M.reachablePlots[100] = { 6005 }
+    M.disallowOps["100:MOVE_TO"] = true  -- simulates that tile being blocked/occupied
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Blocked advance (all reachable tiles rejected) falls back to FORTIFY",
+        op and op.op == "FORTIFY", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
