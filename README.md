@@ -3,14 +3,22 @@
 Adds an in-game panel with two buttons — **Run Now** and **Run Ranged** — that
 each execute one pass over a different family of your **military and religious
 units**, fighting and repositioning them automatically. There is no auto-run: a
-pass only happens when you click one of the two buttons.
+pass only happens when you click one of the two buttons. Both buttons share the
+same **Mode** selector (Aggressive / In-Between / Passive) and the same 6-hex
+engagement gate (see below) — the two families just execute the mode
+differently, per their own mechanics (melee steps/attacks adjacent; ranged
+fires at distance).
 
-## Run Now (melee / cavalry / religious) — three behavior modes
+**Engagement gate (all modes, both buttons):** a unit will never engage or
+advance toward an enemy more than **6 hexes** away. Enemies beyond that are not
+even considered candidates — visibility has no distance limit otherwise, so
+without this gate a unit with nothing closer would march toward literally any
+visible enemy on the map. This is a hard-coded cap, not adjustable from the panel.
 
-The **Melee Mode** selector (Aggressive / In-Between / Passive) controls
-**only** the units handled by **Run Now**: melee, cavalry, and religious units
-(missionaries, apostles, inquisitors). It has no effect on ranged/siege/air
-units, which always use the fixed behavior described in **Run Ranged** below.
+## Run Now (melee / cavalry / religious)
+
+The **Mode** selector controls melee, cavalry, and religious units
+(missionaries, apostles, inquisitors).
 
 | | Aggressive | In-Between | Passive |
 |---|---|---|---|
@@ -22,12 +30,11 @@ The "hold" action is unit-appropriate: military units **Fortify** (defensive bon
 + heal), but religious/civilian units can't fortify, so they **Sleep** (heal in
 place) or **Skip Turn** instead.
 
-**Target priority:** among **all currently-visible** enemies (any enemy on a
-tile your civ can see — no distance limit; fogged enemies are ignored), Run
-Now always prefers the **closest reachable** target; among targets tied on
-distance, it prefers a predicted kill, then max damage, then lowest enemy HP.
-(Run Ranged uses a different priority — kill > damage > distance — described
-below.)
+**Target priority:** among enemies within the 6-hex engagement gate that are
+currently visible, Run Now always prefers the **closest reachable** target;
+among targets tied on distance, it prefers a predicted kill, then max damage,
+then lowest enemy HP. (Run Ranged uses a different priority — kill > damage >
+distance — described below.)
 
 **Execution order within a Run Now pass:** melee/cavalry/religious units only
 (ranged/siege/air are excluded — they belong to Run Ranged), ordered by unit ID
@@ -35,27 +42,32 @@ for determinism. Each click is one round: a unit attacks an adjacent enemy or
 advances toward the closest one using its **full movement** for that turn.
 Click again for the next round.
 
-## Run Ranged (ranged / siege / air) — single fixed behavior, no mode
+## Run Ranged (ranged / siege / air)
 
 Ranged units (archers, crossbows, siege like catapults/trebuchets/bombards, and
-air units) are handled entirely separately from Run Now and ignore the Melee
-Mode selector. Mixing them into the mode pipeline made them either advance
-pointlessly or freeze, so they get their own button and a single behavior:
+air units) are handled entirely separately from Run Now, but respect the same
+**Mode** selector:
 
-1. **Shoot if already in range.**
-2. Else **move to an empty firing tile** (never swapping places with a
-   friendly) that would put the target in range, and fire once the move lands.
-3. Else, if no firing tile is reachable this turn, **advance** (full movement)
-   toward the target to close the distance for a future turn.
-4. Only if none of the above is possible does the unit **hold**.
+- **Aggressive / In-Between** (identical behavior for ranged — mode only
+  changes melee's HP/retreat rules, which don't apply here):
+  1. **Shoot if already in range.**
+  2. Else **move to an empty firing tile** (never swapping places with a
+     friendly) that would put the target in range, and fire once the move lands.
+  3. Else, if no firing tile is reachable this turn, **advance** (full
+     movement) toward the target — capped at the 6-hex engagement gate — to
+     close the distance for a future turn.
+  4. Only if none of the above is possible does the unit **hold**.
+- **Passive:** fire **only if already in range** (step 1 above) — no
+  repositioning, no advancing, ever. A target outside firing range this turn is
+  simply held on, mirroring melee's Passive "never advance toward enemies" rule.
 
 Target ranking is **kill > damage > distance**, computed separately for targets
 already in range vs. everything else — an in-range target is always preferred
 over repositioning. There is no HP/safety gate: if a shot is available, it is
-taken (ranged attacks normally draw no retaliation). Air units are an
-exception: they only ever strike-in-range or hold — they never path across
-tiles (rebasing is a strategic `DEPLOY` choice left to you), so step 2/3 above
-don't apply to them.
+taken (ranged attacks normally draw no retaliation). Air units are a further
+exception on top of Passive: they only ever strike-in-range or hold in **any**
+mode — they never path across tiles at all (rebasing is a strategic `DEPLOY`
+choice left to you), so steps 2/3 above never apply to them.
 
 **Which units the mod controls:** any unit with combat, ranged, or religious
 strength — **except recon units** (Scout/Skirmisher/Ranger), which are excluded
@@ -81,8 +93,9 @@ included by default.
 - **Missionaries / Gurus** (spread-only, no combat) get dedicated behavior in all
   modes: move to the nearest **unconverted** city — **our own cities first**, then
   foreign/neutral — and **Spread Religion** when adjacent. If no unconverted city
-  is visible, they **explore** toward the nearest unrevealed tile (fog edge).
-  "Unconverted" = the city's majority religion isn't the one we founded.
+  is visible, they **hold** (Civ6's own auto-explore handles idle wandering —
+  this mod doesn't duplicate it). "Unconverted" = the city's majority religion
+  isn't the one we founded.
 
 - **Apostles** can **both attack** (religious combat vs. enemy religious units)
   **and spread** religion. Which they prioritize depends on the mode:
@@ -96,7 +109,7 @@ included by default.
   **Last-charge rule (all modes):** an Apostle on its **final spread charge**
   never spreads — it prioritizes **attack** instead (using aggressive combat
   rules so the forced attack isn't cancelled), and if there's no enemy to attack
-  it **explores** to save the charge for you to spend manually. Apostle attacks
+  it **holds** to save the charge for you to spend manually. Apostle attacks
   otherwise use the same suicide/HP safety gates as military units.
 
 - **Inquisitors** carry a combat promotion class and fight via the normal combat
@@ -142,12 +155,12 @@ included by default.
 
 - A small **Auto Battle** panel is docked bottom-right, just above the End Turn
   button. Click its title bar's toggle to minimize/expand the body.
-- Pick a **Melee Mode**: **Aggressive / In-Between / Passive** (highlighted =
-  active). This only affects the **Run Now** pass (see below).
+- Pick a mode: **Aggressive / In-Between / Passive** (highlighted = active;
+  labeled "Melee Mode" on the panel, but it governs both buttons — see above).
 - **Run Now** executes one melee/cavalry/religious pass immediately, using the
-  selected Melee Mode.
-- **Run Ranged** executes one ranged/siege/air pass immediately, with its own
-  fixed behavior (no mode, see above).
+  selected mode.
+- **Run Ranged** executes one ranged/siege/air pass immediately, using the same
+  selected mode (see the Run Ranged section above for how each mode differs).
 - There is no auto-run: nothing happens at turn start except clearing any
   pending ranged shot from last turn — every pass is a manual button click.
 - The status line shows a breakdown of the last pass's outcome (e.g.
@@ -259,18 +272,22 @@ panel.)
 ## Known limitations / next steps
 
 - "Optimal target" is a heuristic (kill-first, then max-damage, distance as
-  tie-breaker) over all visible enemies. It doesn't do multi-turn strategic
-  planning, and it will send units to advance toward any visible enemy — a
-  rear-line unit may march toward a distant foe rather than hold position.
+  tie-breaker) over enemies within the 6-hex engagement gate. It doesn't do
+  multi-turn strategic planning.
 - Ranged **move-then-attack** is event-driven: the unit moves to its firing plot
   this pass and fires on arrival (via `UnitMoveComplete`). If that event name
   differs on your patch, the unit still moves but won't fire until the next pass
   (the log will say so).
 - When a ranged unit's target is out of movement+range entirely (no firing plot
-  reachable this turn), it now advances toward the target with full movement
-  instead of holding — same as melee's advance, but ground-only: air units
-  still only strike-in-range or hold, since they don't path across tiles.
+  reachable this turn) in Aggressive/In-Between, it advances toward the target
+  with full movement instead of holding — same as melee's advance, but
+  ground-only: air units still only strike-in-range or hold in any mode, since
+  they don't path across tiles. Passive skips this entirely (fire only, never
+  reposition/advance).
 - Religious combat uses the same target/decision pipeline; if the combat
   predictor doesn't model religious strength on your build, the fallback
   heuristic handles it (watch the log).
+- No idle-exploration behavior: units with nothing to attack/spread simply
+  hold. Civ6's own auto-explore automation handles wandering scouts/idle units
+  — this mod intentionally doesn't duplicate it.
 - No custom art/icons yet — panel uses stock UI styles.

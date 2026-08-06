@@ -29,6 +29,14 @@ local MODE_PASSIVE    = 3
 
 local m_mode = MODE_BALANCED
 
+-- Hard-coded engagement gate: enemies more than this many hexes away are never
+-- targeted, in ANY mode, by melee or ranged. Without this, a unit with no
+-- closer target will advance/reposition toward literally any visible enemy on
+-- the map (see GatherEnemyTargets' "no distance limit" visibility scan), even
+-- one dozens of tiles away -- this caps that so units hold near home instead of
+-- marching across the map alone.
+local MAX_ENGAGE_DIST = 6
+
 -- Pending ranged shots: units that were told to move to a firing plot this pass
 -- and should fire once their move completes. Keyed by unit ID -> {x=, y=}.
 -- Resolved in OnUnitMoveComplete so the RANGE_ATTACK is issued from the unit's
@@ -410,11 +418,12 @@ local function IsPlotVisibleTo(selfPlayerId, x, y)
     return isVisible == true
 end
 
--- Collect ALL currently-visible enemy targets (units and cities) for a unit.
--- No distance cap: any enemy on a tile your civ can currently see is a
--- candidate; fogged/never-seen enemies are excluded. Each target records its
--- tile distance from the unit so callers can prioritize by proximity.
--- Returns a list of { kind="unit"|"city", obj=..., x=, y=, playerId=, dist= }.
+-- Collect currently-visible enemy targets (units and cities) for a unit,
+-- within MAX_ENGAGE_DIST hexes: any enemy on a tile your civ can currently see
+-- AND within that range is a candidate; fogged/never-seen/too-far enemies are
+-- excluded. Each target records its tile distance from the unit so callers can
+-- prioritize by proximity. Returns a list of
+-- { kind="unit"|"city", obj=..., x=, y=, playerId=, dist= }.
 -- True if this plot is a water tile (naval units sit here; land melee can't
 -- attack into it). Defensive: unknown -> treat as land (don't over-filter).
 local function PlotIsWater(x, y)
@@ -494,10 +503,12 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
                             end
                         end
 
-                        if validPair and IsPlotVisibleTo(selfPlayerId, ex, ey) then
+                        local eDist = PlotDistance(ux, uy, ex, ey)
+                        if validPair and eDist <= MAX_ENGAGE_DIST
+                           and IsPlotVisibleTo(selfPlayerId, ex, ey) then
                             table.insert(targets, {
                                 kind = "unit", obj = e, x = ex, y = ey, playerId = pid,
-                                dist = PlotDistance(ux, uy, ex, ey),
+                                dist = eDist,
                             })
                         end
                     end
@@ -511,10 +522,12 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
                     for _, c in pCities:Members() do
                         if c ~= nil then
                             local cx, cy = c:GetX(), c:GetY()
-                            if IsPlotVisibleTo(selfPlayerId, cx, cy) then
+                            local cDist = PlotDistance(ux, uy, cx, cy)
+                            if cDist <= MAX_ENGAGE_DIST
+                               and IsPlotVisibleTo(selfPlayerId, cx, cy) then
                                 table.insert(targets, {
                                     kind = "city", obj = c, x = cx, y = cy, playerId = pid,
-                                    dist = PlotDistance(ux, uy, cx, cy),
+                                    dist = cDist,
                                 })
                             end
                         end
@@ -527,11 +540,11 @@ local function GatherEnemyTargets(pUnit, selfPlayerId)
 end
 
 -- ---------------------------------------------------------------------------
---  Missionary (spread religious unit) support: convert cities, else explore.
+--  Missionary (spread religious unit) support: convert unconverted cities.
 -- ---------------------------------------------------------------------------
 
--- Forward declarations: these positioning helpers are defined later but used by
--- FindExplorePlot below. Declaring them here makes the later `function X()`
+-- Forward declarations: these positioning helpers are defined later but used
+-- earlier in the file. Declaring them here makes the later `function X()`
 -- definitions assign to these locals (shared upvalue), so the reference resolves.
 local GetReachablePlots
 local DoMoveTo
@@ -600,77 +613,6 @@ local function ChooseConversionTarget(convTargets)
     end
     if bestOwn ~= nil then return bestOwn end
     return bestOther
-end
-
--- Find the reachable plot closest to the nearest UNREVEALED tile (fog edge), so
--- an idle missionary wanders outward to explore. Returns x,y or nil.
-local function FindExplorePlot(pUnit, selfPlayerId)
-    local vis = PlayersVisibility and PlayersVisibility[selfPlayerId] or nil
-    local reach = GetReachablePlots and GetReachablePlots(pUnit) or nil
-    if reach == nil then return nil end
-
-    -- For each reachable plot, score by how close it is to unrevealed territory.
-    -- We approximate "near the fog edge" as: a reachable plot that has at least
-    -- one not-yet-revealed neighbor is ideal; otherwise take the plot furthest
-    -- from our current position (push outward).
-    local ux, uy = pUnit:GetX(), pUnit:GetY()
-
-    local function IsRevealed(x, y)
-        if vis == nil then return true end
-        local ok, r = Try("IsRevealed", function()
-            -- IsRevealed takes a plot index in the real API; convert via Map.
-            local pPlot = Map.GetPlot and Map.GetPlot(x, y) or nil
-            if pPlot == nil then return true end
-            return vis:IsRevealed(pPlot:GetIndex())
-        end)
-        if not ok then return true end
-        return r == true
-    end
-
-    -- Count how many of a plot's 6 hex neighbors are still fogged. More fogged
-    -- neighbors = a plot deeper on the frontier that reveals more when reached.
-    local function UnrevealedNeighborCount(x, y)
-        local n = 0
-        -- Even/odd-row hex neighbor offsets (Civ6 uses offset coords).
-        local odd = (y % 2) ~= 0
-        local offs = odd
-            and { {1,0},{-1,0},{0,1},{1,1},{0,-1},{1,-1} }
-            or  { {1,0},{-1,0},{-1,1},{0,1},{-1,-1},{0,-1} }
-        for _, o in ipairs(offs) do
-            if not IsRevealed(x + o[1], y + o[2]) then n = n + 1 end
-        end
-        return n
-    end
-
-    -- Pick the FURTHEST reachable plot that still borders fog. Rationale:
-    -- exploration should commit to a heading and cover ground -- reach the edge of
-    -- this turn's movement, out where the frontier is, and reveal new tiles there.
-    -- Ranking by fog-COUNT instead (densest pocket) makes the unit swing toward
-    -- whichever direction has the most fog each turn and oscillate ("patrol") near
-    -- home; ranking by CLOSEST fog reveals a one-tile pocket and stops, wasting the
-    -- rest of the move. Distance-primary among fog-bordering tiles avoids both:
-    -- it uses full movement and keeps pushing outward. Fog-count is only a tiebreak
-    -- between equidistant frontier tiles (open toward the bigger unknown).
-    local bestX, bestY = nil, nil
-    local bestDist, bestFog = -1, -1
-    -- Furthest-from-start fallback used only if NOTHING reachable touches fog.
-    local farX, farY, farDist = nil, nil, -1
-
-    for _, p in ipairs(reach) do
-        local d = PlotDistance(ux, uy, p.x, p.y)
-        if d > farDist then farDist = d; farX, farY = p.x, p.y end
-
-        local fog = UnrevealedNeighborCount(p.x, p.y)
-        if fog > 0 then
-            if d > bestDist or (d == bestDist and fog > bestFog) then
-                bestDist, bestFog = d, fog
-                bestX, bestY = p.x, p.y
-            end
-        end
-    end
-
-    if bestX ~= nil then return bestX, bestY end
-    return farX, farY
 end
 
 -- ---------------------------------------------------------------------------
@@ -1362,17 +1304,17 @@ end
 --  Execute one unit's turn.
 -- ---------------------------------------------------------------------------
 
--- Forward declarations for the shared execute helpers (defined below), used by
+-- Forward declaration for the shared execute helper (defined below), used by
 -- ProcessMissionary here and by ProcessApostle further down.
-local ExecuteSpread, ExecuteExplore
+local ExecuteSpread
 
 -- Missionary/Guru: convert the nearest unconverted city (our cities first, then
--- foreign/neutral); if none visible, wander toward the fog edge to explore.
--- Behavior is identical in all modes (these units can't fight).
+-- foreign/neutral); if none visible, hold (Civ6's own auto-explore handles
+-- idle wandering -- this mod doesn't duplicate it). Behavior is identical in
+-- all modes (these units can't fight).
 local function ProcessMissionary(pUnit, selfPlayerId)
     if ExecuteSpread(pUnit, selfPlayerId) then return true end
-    if ExecuteExplore(pUnit, selfPlayerId) then return true end
-    DebugLog("  missionary: nothing to convert or explore -> fortify")
+    DebugLog("  missionary: nothing to convert -> fortify")
     DoHold(pUnit)
     return true
 end
@@ -1383,20 +1325,14 @@ end
 --   "notarget"  no enemy target existed at all (caller may fall through)
 -- The `fortifyIfNoTarget` flag controls whether we fortify (true) or just report
 -- "notarget" (false) when there's nothing to attack -- Apostles want to fall
--- through to spread/explore instead of fortifying.
+-- through to spread instead of fortifying.
 local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
 
     if #targets == 0 then
         if fortifyIfNoTarget then
-            -- No enemy in view. In Aggressive/Balanced, keep the map opening up:
-            -- move toward the fog edge (reuses the missionary explorer). Passive
-            -- holds position. If exploring isn't possible (nowhere to go), hold.
-            if (mode == MODE_AGGRESSIVE or mode == MODE_BALANCED)
-               and ExecuteExplore(pUnit, selfPlayerId) then
-                DebugLog("  no visible enemy target -> explore")
-                return "acted"
-            end
+            -- No enemy in view, in ANY mode: hold. Civ6's own auto-explore
+            -- handles idle wandering -- this mod doesn't duplicate it.
             DebugLog("  no visible enemy target -> fortify")
             DoHold(pUnit)
             return "acted"
@@ -1484,17 +1420,6 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
     return true
 end
 
--- Move toward the fog edge to explore. Returns true if it moved.
-function ExecuteExplore(pUnit, selfPlayerId)  -- assigns to forward-declared local
-    local ex, ey = FindExplorePlot(pUnit, selfPlayerId)
-    if ex ~= nil and (ex ~= pUnit:GetX() or ey ~= pUnit:GetY()) then
-        DebugLog(string.format("  explore toward (%s,%s)", S(ex), S(ey)))
-        DoMoveTo(pUnit, ex, ey)
-        return true
-    end
-    return false
-end
-
 -- Distance to the nearest enemy religious unit we could attack (or math.huge).
 local function NearestAttackDist(pUnit, selfPlayerId)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
@@ -1514,8 +1439,8 @@ local function NearestSpreadDist(pUnit, selfPlayerId)
 end
 
 -- Apostle: can attack AND spread. Mode decides which to prioritize; NEVER spread
--- on the last charge (attack instead, or explore if no enemy). Fall back to
--- explore when neither is possible.
+-- on the last charge (attack instead, or hold if no enemy -- saves the charge
+-- for you to spend manually).
 local function ProcessApostle(pUnit, selfPlayerId, mode)
     local charges = SpreadChargesLeft(pUnit)
     local lastCharge = (charges <= 1)
@@ -1526,7 +1451,7 @@ local function ProcessApostle(pUnit, selfPlayerId, mode)
     DebugLog(string.format("  apostle: charges=%s lastCharge=%s attackDist=%s spreadDist=%s",
         S(charges), tostring(lastCharge), S(attackDist), S(spreadDist)))
 
-    -- Last charge: never spread. Attack if possible, else explore (save charge).
+    -- Last charge: never spread. Attack if possible, else hold (save charge).
     -- Use AGGRESSIVE combat rules here regardless of the panel mode -- the
     -- last-charge rule is "prioritize attack", so we don't want Passive's
     -- don't-attack gate to turn a forced attack into a fortify. (Suicide is still
@@ -1535,7 +1460,7 @@ local function ProcessApostle(pUnit, selfPlayerId, mode)
         if hasAttack then
             return ExecuteCombat(pUnit, selfPlayerId, MODE_AGGRESSIVE, true)
         end
-        if not ExecuteExplore(pUnit, selfPlayerId) then DoHold(pUnit) end
+        DoHold(pUnit)
         return true
     end
 
@@ -1559,19 +1484,22 @@ local function ProcessApostle(pUnit, selfPlayerId, mode)
     if hasAttack then
         if ExecuteCombat(pUnit, selfPlayerId, mode, false) == "acted" then return true end
     end
-    -- Nothing to do -> explore.
-    if not ExecuteExplore(pUnit, selfPlayerId) then DoHold(pUnit) end
+    -- Nothing to do -> hold.
+    DoHold(pUnit)
     return true
 end
 
 -- ---------------------------------------------------------------------------
---  Ranged/siege/air executor (the "Run Ranged" button). Single fixed behavior,
---  NO mode and NO advance-toward-enemy: if the unit can shoot in place, shoot;
---  else if it can move to an EMPTY firing tile and shoot, do that; otherwise
---  WAIT (hold). Never walks toward the enemy without a shot -- that's the melee
---  job. This is why ranged has its own button: mixing it into the mode pipeline
---  made ranged either advance pointlessly or freeze. No safety/HP gate: if a
---  shot is available it is taken.
+--  Ranged/siege/air executor (the "Run Ranged" button). No safety/HP gate: if
+--  a shot is available it is taken, in every mode.
+--
+--  Aggressive/Balanced: if the unit can shoot in place, shoot; else move to an
+--  EMPTY firing tile and shoot, else advance toward the target with full
+--  movement (never past MAX_ENGAGE_DIST -- see GatherEnemyTargets); else WAIT.
+--
+--  Passive: fire ONLY if already in range with no repositioning at all -- never
+--  moves to a firing tile, never advances. A target out of range this turn is
+--  simply held on, exactly like melee's Passive rule ("never advance").
 -- ---------------------------------------------------------------------------
 -- Pick a target for a ranged unit WITHOUT requiring a combat prediction. The
 -- ranged button is "always shoot if in range" (no safety gate), so a failed
@@ -1619,20 +1547,14 @@ local function ChooseRangedTarget(pUnit, targets)
     return closest
 end
 
-local function ExecuteRanged(pUnit, selfPlayerId)
+local function ExecuteRanged(pUnit, selfPlayerId, mode)
     local targets = GatherEnemyTargets(pUnit, selfPlayerId)
     DebugLog(string.format("  ranged %s: %d candidate target(s)", DescribeUnit(pUnit), #targets))
     if #targets == 0 then
-        -- No enemy in sight: don't just sit -- scout toward the nearest fog edge
-        -- (same explorer idle melee uses), so ranged units advance the map with
-        -- their leftover movement. Fall back to hold if there's nowhere to explore.
+        -- No enemy in sight: hold. Civ6's own auto-explore handles idle
+        -- wandering -- this mod doesn't duplicate it.
         Diag("noTarget")
-        if ExecuteExplore(pUnit, selfPlayerId) then
-            DebugLog("  ranged: no visible enemy -> explore")
-            Diag("moved")
-            return true
-        end
-        DebugLog("  ranged: no visible enemy, nothing to explore -> wait")
+        DebugLog("  ranged: no visible enemy -> wait")
         DoHold(pUnit)
         return false   -- nothing to shoot; didn't really act
     end
@@ -1661,21 +1583,35 @@ local function ExecuteRanged(pUnit, selfPlayerId)
         DebugLog("  ranged: in-place shot refused -> try reposition")
     end
 
+    -- Passive: fire only if already in range (step 1, above). Never reposition
+    -- or advance -- mirrors melee's Passive rule ("never advance toward
+    -- enemies"). A target out of range this turn is simply held on.
+    if mode == MODE_PASSIVE then
+        DebugLog("  ranged: passive -> no reposition/advance, wait")
+        Diag("held")
+        DoHold(pUnit)
+        return false
+    end
+
     -- 2) Else move to an EMPTY firing tile and fire once the move completes. Try
     --    firing plots in ranked order (max range first); if a move is rejected
     --    (path blocked, engine refusal), fall through to the next-best plot so a
-    --    blocked ideal tile doesn't leave the unit idle.
-    local plots = RankedFiringPlots(pUnit, tgt)
-    for _, fp in ipairs(plots) do
-        m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
-        if DoMoveTo(pUnit, fp.x, fp.y) then
-            DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
-                S(fp.x), S(fp.y), S(tgt.x), S(tgt.y)))
-            Diag("moved")
-            return true
+    --    blocked ideal tile doesn't leave the unit idle. Air units never path
+    --    across tiles (see step 3's note), so skip repositioning for them too --
+    --    they only ever strike a target already in range, or hold.
+    if not IsAir(pUnit) then
+        local plots = RankedFiringPlots(pUnit, tgt)
+        for _, fp in ipairs(plots) do
+            m_pendingShots[pUnit:GetID()] = { x = tgt.x, y = tgt.y }
+            if DoMoveTo(pUnit, fp.x, fp.y) then
+                DebugLog(string.format("  ranged: move&shoot via (%s,%s) -> (%s,%s)",
+                    S(fp.x), S(fp.y), S(tgt.x), S(tgt.y)))
+                Diag("moved")
+                return true
+            end
+            m_pendingShots[pUnit:GetID()] = nil  -- move failed; clear the pending shot
+            DebugLog(string.format("    ranged firing tile (%s,%s) rejected; trying next", S(fp.x), S(fp.y)))
         end
-        m_pendingShots[pUnit:GetID()] = nil  -- move failed; clear the pending shot
-        DebugLog(string.format("    ranged firing tile (%s,%s) rejected; trying next", S(fp.x), S(fp.y)))
     end
 
     -- 3) No firing plot reachable this turn: the target is visible but out of
@@ -1799,12 +1735,13 @@ function AutoBattle_RunMelee()
         function(u, pid) return ProcessMeleeUnit(u, pid, m_mode) end)
 end
 
--- Public: run the RANGED pass ("Run Ranged"). Ranged/siege/air only. Fixed
--- shoot-or-wait behavior, no mode.
+-- Public: run the RANGED pass ("Run Ranged"). Ranged/siege/air only. Uses the
+-- selected mode: Aggressive/Balanced reposition+advance as needed; Passive
+-- fires only if already in range (see ExecuteRanged).
 function AutoBattle_RunRanged()
     return RunPassFiltered("ranged",
         function(u) return IsRangedFamily(u) end,
-        function(u, pid) return ExecuteRanged(u, pid) end)
+        function(u, pid) return ExecuteRanged(u, pid, m_mode) end)
 end
 
 -- ---------------------------------------------------------------------------

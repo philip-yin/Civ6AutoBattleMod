@@ -163,6 +163,32 @@ do
 end
 
 -- -------------------------------------------------------------------------
+-- 6b. Passive ranged: target visible but out of firing range -> HOLDS, does
+--     NOT reposition to a firing tile or advance. This is the "ranged mode-
+--     aware Passive" rule: fire only if no movement is required at all.
+--     A reachable plot IS registered that would both (a) put the target in
+--     range and (b) be picked by the advance-fallback -- proving Passive is
+--     what's blocking the move, not a lack of reachable plots.
+-- -------------------------------------------------------------------------
+do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, ranged=50, range=2 } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=8, y=5, combat=40 } } }              -- dist 3: out of range 2
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.plots[6005] = { x=6, y=5 }                          -- dist 2 from (8,5): would be in range
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_PASSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Passive ranged out of range holds (no reposition/advance)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
 -- 7. Passive: never advances (enemy out of range)
 -- -------------------------------------------------------------------------
 scenario(
@@ -174,6 +200,45 @@ do
     local op = firstOp(100)
     check("Passive never advances -> fortify",
         op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 7b. MAX_ENGAGE_DIST gate: even AGGRESSIVE (which normally advances toward
+--     ANY visible enemy) refuses to engage/advance toward an enemy more than
+--     6 hexes away -- the enemy must not even be gathered as a candidate.
+-- -------------------------------------------------------------------------
+scenario(
+    { x=5, y=5, combat=50 },
+    { x=12, y=5, combat=40 },                        -- dist 7: just beyond the gate
+    nil,
+    MODE_AGGRESSIVE)
+do
+    local op = firstOp(100)
+    check("Aggressive does not engage/advance beyond MAX_ENGAGE_DIST (7 hexes)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 7c. MAX_ENGAGE_DIST gate boundary: an enemy exactly AT the 6-hex gate is
+--     still a valid candidate -- Aggressive advances toward it. A reachable
+--     plot is registered (scenario() doesn't expose one) so the melee unit
+--     actually has somewhere to step toward.
+-- -------------------------------------------------------------------------
+do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={ { id=100, x=5, y=5, combat=50 } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=11, y=5, combat=40 } } }             -- dist 6: right at the gate, still valid
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Aggressive still engages/advances at exactly MAX_ENGAGE_DIST (6 hexes)",
+        op and op.op == "MOVE_TO", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
@@ -370,11 +435,13 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 19. Air unit with target OUT of range -> fortify (never advances/deploys).
---     Air units are IsRangedFamily, so runBothPasses() drives this through
---     Run Ranged's ExecuteRanged too -- a reachable plot is registered so
---     AdvanceTowardTarget WOULD succeed if the IsAir guard there were ever
---     removed, making this test actually catch that regression.
+-- 19. Air unit with target OUT of range (but within the MAX_ENGAGE_DIST gate,
+--     so it's still a gathered candidate, not filtered out entirely) ->
+--     fortify (never advances/deploys). Air units are IsRangedFamily, so
+--     runBothPasses() drives this through Run Ranged's ExecuteRanged too -- a
+--     reachable plot is registered so AdvanceTowardTarget WOULD succeed if the
+--     IsAir guard there were ever removed, making this test actually catch
+--     that regression.
 -- -------------------------------------------------------------------------
 do
     M.reset()
@@ -382,7 +449,7 @@ do
     M.players[0] = M.makePlayer{ id=0, units={
         { id=100, x=5, y=5, ranged=60, range=4, domain="DOMAIN_AIR", unitType="UNIT_BOMBER" } } }
     M.players[1] = M.makePlayer{ id=1, units={
-        { id=200, x=15, y=5, combat=40 } } }             -- far out of range
+        { id=200, x=10, y=5, combat=40 } } }             -- dist 5: beyond air range 4, within engage gate 6
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     M.plots[6005] = { x=6, y=5 }
     M.reachablePlots[100] = { 6005 }                     -- would let ground advance succeed
@@ -395,9 +462,10 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 19b. Ground ranged unit with target out of movement+range -> ADVANCES
---      (full movement) instead of holding. Enemy is far beyond range+reach;
---      the only reachable plot (6,5) is still outside firing range of it, so
+-- 19b. Ground ranged unit with target out of movement+range, but within the
+--      MAX_ENGAGE_DIST gate -> ADVANCES (full movement) instead of holding.
+--      Target is dist 6 from (5,5) (right at the gate) and still dist 5 from
+--      the only reachable plot (6,5) -- out of firing range 2 either way -- so
 --      ExecuteRanged's step 3 (advance fallback) should fire a MOVE_TO there.
 -- -------------------------------------------------------------------------
 do
@@ -406,10 +474,10 @@ do
     M.players[0] = M.makePlayer{ id=0, units={
         { id=100, x=5, y=5, ranged=50, range=2 } } }
     M.players[1] = M.makePlayer{ id=1, units={
-        { id=200, x=20, y=5, combat=40 } } }             -- far out of range+reach
+        { id=200, x=11, y=5, combat=40 } } }             -- dist 6: within engage gate, out of range+reach
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     M.plots[6005] = { x=6, y=5 }
-    M.reachablePlots[100] = { 6005 }                     -- still nowhere near range 2 of (20,5)
+    M.reachablePlots[100] = { 6005 }                     -- still nowhere near range 2 of (11,5)
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
@@ -417,6 +485,31 @@ do
     check("Ranged unit out of range advances toward distant target (no hold)",
         op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 19c. MAX_ENGAGE_DIST gate applies to Run Ranged too: a ranged unit does NOT
+--      gather (let alone advance toward) an enemy beyond the 6-hex gate, even
+--      though ExecuteRanged has no mode/HP gating of its own. With no targets
+--      and no explore fallback (removed -- Civ6's own auto-explore covers idle
+--      wandering), the unit simply holds.
+-- -------------------------------------------------------------------------
+do
+    M.reset()
+    M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, ranged=50, range=2 } } }
+    M.players[1] = M.makePlayer{ id=1, units={
+        { id=200, x=12, y=5, combat=40 } } }             -- dist 7: just beyond the gate
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.plots[6005] = { x=6, y=5 }                         -- reachable, but irrelevant: no target gathered
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Ranged unit does not engage an enemy beyond MAX_ENGAGE_DIST (7 hexes)",
+        op and op.op == "FORTIFY", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
@@ -527,7 +620,8 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 25. Missionary with no unconverted city -> explores toward fog edge
+-- 25. Missionary with no unconverted city -> holds via SLEEP (no explore --
+--     Civ6's own auto-explore handles idle wandering; this mod doesn't).
 -- -------------------------------------------------------------------------
 do
     M.reset(); M.localPlayerId = 0
@@ -536,18 +630,12 @@ do
         units = { { id=100, x=5, y=5, religious=100, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN" } },
         cities = { { id=300, x=6, y=5, religion="REL_OURS" } } }  -- already ours -> no target
-    -- Reachable plot (7,5); its neighbor (8,5) is unrevealed -> fog edge.
-    M.plots[7005] = { x=7, y=5 }
-    M.reachablePlots[100] = { 7005 }
-    M.revealedDefault = true
-    M.revealed["8,5"] = false  -- fog just past (7,5)
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
-    check("Missionary with nothing to convert explores toward fog edge",
-        op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
-        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+    check("Missionary with nothing to convert holds via SLEEP",
+        op and op.op == "SLEEP", op and op.op or "no op")
 end
 
 -- Helper: build an Apostle scenario. Our apostle vs optional enemy religious
@@ -628,16 +716,15 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 30. Last charge + no enemy -> explore (save the charge, don't spread)
+-- 30. Last charge + no enemy -> holds via SLEEP (saves the charge, does not
+--     spread; no explore -- Civ6's own auto-explore handles idle wandering).
 -- -------------------------------------------------------------------------
 apostleScenario{ mode=MODE_AGGRESSIVE, charges=1,
-    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" },  -- unconverted, but last charge
-    reach={ 7005 }, plots={ [7005]={x=7,y=5} }, fog={ ["8,5"]=false } }
+    ownCity={ id=300, x=5, y=6, religion="REL_PAGAN" } } -- unconverted, but last charge
 do
     local op = firstOp(100)
-    check("Last charge + no enemy -> explore (does not spread)",
-        op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
-        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+    check("Last charge + no enemy -> holds via SLEEP (does not spread)",
+        op and op.op == "SLEEP", op and op.op or "no op")
 end
 
 -- -------------------------------------------------------------------------
