@@ -101,12 +101,11 @@ end
 local m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
 local m_excluded = {}
 
--- Per-unit trace lines for THIS pass, richer than the aggregate m_diag counts.
--- Requested explicitly: a bare "moved 1" doesn't distinguish "engine accepted
--- the move and the unit's position actually changed" from "engine reported
--- success but the unit is still standing where it started" (or from a
--- core-busy status at the moment of the attempt) -- this records exactly that,
--- per unit, so it's diagnosable from the panel with no Lua.log needed.
+-- Per-unit problem lines for THIS pass, named by unit type (e.g. "Warrior") --
+-- never a raw unit ID, since there's no in-game way to map an ID back to what's
+-- on screen. Only units that hit a real problem (engine rejected the action, or
+-- accepted it but the unit hasn't actually moved yet) get a line; routine
+-- successful attacks/moves are already covered by the fired/moved counts.
 local m_traceLines = {}
 local MAX_TRACE_LINES = 8  -- cap so the status line can't grow unbounded
 
@@ -145,35 +144,69 @@ local function Try(label, fn)
     return true, res
 end
 
--- Record one unit's outcome for this pass. `fromX/fromY` are the position
--- BEFORE the operation was attempted; positions are re-read via GetX/GetY
--- AFTER, so a "moved" outcome whose before/after coordinates are IDENTICAL is
--- immediately visible -- that's the "engine said ok but nothing happened" case.
+-- Human-readable unit name for the panel log (e.g. "Warrior") -- raw unit IDs
+-- mean nothing in-game, since there's no way to look up "unit 131073" against
+-- what's on screen. Falls back to "Unit" if the type/name can't be resolved.
+local function UnitDisplayName(pUnit)
+    local ok, ut = Try("GetUnitType", function() return pUnit:GetUnitType() end)
+    if not ok or ut == nil then return "Unit" end
+    local info = GameInfo.Units[ut]
+    if info == nil or info.Name == nil then return "Unit" end
+    local okL, name = Try("Locale.Lookup", function() return Locale.Lookup(info.Name) end)
+    if okL and name ~= nil and name ~= "" then return name end
+    return "Unit"
+end
+
+-- Friendly, human-readable explanation for a problem outcome, keyed by the
+-- action string each call site passes. Returns nil for actions/outcomes that
+-- aren't worth surfacing on the panel (routine successes).
+local function TraceProblemText(action, opResult, moved)
+    if not opResult then
+        -- The engine rejected the operation outright.
+        if action == "attack" or action == "ranged-attack" then
+            return "could not attack, held position instead"
+        elseif action == "moveattack" or action == "moveattack-fallback-attack" then
+            return "could not reach firing position, held instead"
+        elseif action == "advance" then
+            return "could not advance toward enemy, held position instead"
+        elseif action == "spread" or action == "spread-advance-blocked" then
+            return "could not spread religion or advance, held instead"
+        end
+        return "action was rejected, held instead"
+    end
+    -- Engine accepted the operation, but the unit's position didn't actually
+    -- change by the time we checked -- RequestOperation is async, so this is
+    -- USUALLY just the move still resolving, not a real failure. Still worth a
+    -- one-line note rather than silently counting it as a normal move.
+    if moved == false and (action == "advance" or action == "moveattack") then
+        return "move accepted but not yet completed (still resolving)"
+    end
+    return nil
+end
+
+-- Record one unit's outcome for this pass, IF it's worth surfacing. Only
+-- problem outcomes (engine-rejected action, or an accepted move that hasn't
+-- actually moved the unit yet) get a line -- routine successful attacks/moves
+-- are already reflected in the fired/moved counts and don't need repeating.
+-- Uses the unit's display name (e.g. "Warrior"), never a raw unit ID, since
+-- there's no in-game way to map an ID back to what's on screen.
 local function Trace(pUnit, action, fromX, fromY, opResult)
     if #m_traceLines >= MAX_TRACE_LINES then return end
     local okX, curX = pcall(function() return pUnit:GetX() end)
     local okY, curY = pcall(function() return pUnit:GetY() end)
-    local toX = (okX and curX) or "?"
-    local toY = (okY and curY) or "?"
-    local okBusy, busy = false, nil
-    if UI ~= nil and UI.IsGameCoreBusy ~= nil then
-        okBusy, busy = pcall(function() return UI.IsGameCoreBusy() end)
-    end
     local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
-    table.insert(m_traceLines, string.format(
-        "u%s %s (%s,%s)->(%s,%s) %s%s busy=%s",
-        S(pUnit:GetID()), S(action), S(fromX), S(fromY), S(toX), S(toY),
-        opResult and "ok" or "REJECTED",
-        (opResult and action == "advance" and not moved) and "-NOMOVE" or "",
-        (okBusy and tostring(busy)) or "?"))
+    local problem = TraceProblemText(action, opResult, moved)
+    if problem == nil then return end
+    table.insert(m_traceLines, UnitDisplayName(pUnit) .. ": " .. problem)
 end
 
--- Public: a compact one-line summary of the last pass, for the panel status line.
+-- Public: a compact summary of the last pass, for the panel status line.
 -- e.g. "fired 2 | held 1 | no target 1 | excluded: fortified 1". Empty string
 -- if nothing of note. The "excluded" breakdown answers "why did a unit that
--- looked ready do nothing at all" without needing Lua.log. Per-unit trace lines
--- (see Trace()) are appended after, one per line, for deep debugging of a
--- specific stuck unit (from/to coords, engine result, core-busy status).
+-- looked ready do nothing at all" without needing Lua.log. Per-unit problem
+-- lines (see Trace()) are appended after, one per line, named by unit type
+-- (e.g. "Warrior: could not advance toward enemy, held position instead") --
+-- only units that hit a real problem get a line; routine successes don't.
 function AutoBattle_LastDiag()
     local parts = {}
     if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
@@ -196,8 +229,8 @@ function AutoBattle_LastDiag()
 
     local summary = table.concat(parts, " | ")
     if #m_traceLines > 0 then
-        local trace = table.concat(m_traceLines, " / ")
-        if summary ~= "" then return summary .. " || " .. trace end
+        local trace = table.concat(m_traceLines, "\n")
+        if summary ~= "" then return summary .. "\n" .. trace end
         return trace
     end
     return summary
