@@ -50,16 +50,19 @@ end
 -- ---------------------------------------------------------------------------
 --  Handlers
 -- ---------------------------------------------------------------------------
--- Hard-wrap: insert a newline every 20 characters, regardless of word
+-- Hard-wrap: insert a line break every 20 characters, regardless of word
 -- boundaries. Requested for the debug diag text, which can otherwise run past
 -- the panel's WrapWidth as one long unbroken line (e.g. long "excluded: ..."
 -- breakdowns) since it's plain text, not word-wrapped loc content.
+-- IMPORTANT: Civ6's text rendering uses the literal markup tag "[NEWLINE]" for
+-- line breaks in SetText -- a raw "\n" byte is not recognized as whitespace by
+-- the font/glyph pipeline and renders as a garbage placeholder glyph instead.
 local function HardWrap(s, chunkSize)
     local parts = {}
     for i = 1, #s, chunkSize do
         table.insert(parts, s:sub(i, i + chunkSize - 1))
     end
-    return table.concat(parts, "\n")
+    return table.concat(parts, "[NEWLINE]")
 end
 
 -- Update the status line from a pass result (units acted on). Since this build

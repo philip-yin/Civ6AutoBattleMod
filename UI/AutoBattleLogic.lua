@@ -203,17 +203,30 @@ local function IsEligibleUnit(pUnit)
     -- mod auto-fortified as its "hold" action, which therefore won't auto re-engage
     -- until you wake them. Sleep is the durable "don't touch this unit" marker.
     --
-    -- GetFortifyTurns() is NOT a live "is fortified now" flag -- it's a cumulative
-    -- turn counter that can stay nonzero after the unit is woken (e.g. via Cancel).
-    -- The stock UI never trusts it alone (see UnitPanel.lua/WorldTracker.lua's
-    -- "activityType ~= ACTIVITY_AWAKE and GetFortifyTurns() > 0" pattern for the
-    -- fortify defense icon) -- we mirror that here, or a woken unit with a stale
-    -- nonzero counter gets wrongly skipped forever with no trace in the log.
+    -- GetActivityType() == ACTIVITY_SLEEP is NOT specific to plain Sleep: Alert
+    -- (the "auto-wake on enemy sighted" stance) sets the SAME ACTIVITY_SLEEP
+    -- value at the engine level -- there is no separate Lua-visible activity
+    -- constant for it. Waking ONE alerted unit does not necessarily flip its
+    -- GetActivityType() away from ACTIVITY_SLEEP, so trusting that alone wrongly
+    -- re-excludes a unit the player just activated. The base game itself faces
+    -- the same ambiguity and resolves it with a SEPARATE check, IsReadyToMove()
+    -- (UnitPanel.lua:4066, used purely to grey out a unit list entry) -- a
+    -- genuinely parked unit (Sleep/Fortify) reports IsReadyToMove()=false
+    -- (confirmed in-game: parked units render greyed out; a woken unit renders
+    -- white/active), so we use it here to un-exclude a "SLEEP" unit that's
+    -- actually just an alerted unit sitting idle, without touching truly parked
+    -- ones.
     local act, okAct = nil, false
     if UnitManager ~= nil and UnitManager.GetActivityType ~= nil and ActivityTypes ~= nil then
         local ok, a = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
         if ok then act = a; okAct = true end
-        if ok and a == ActivityTypes.ACTIVITY_SLEEP then return false, "asleep" end
+        if ok and a == ActivityTypes.ACTIVITY_SLEEP then
+            local okR, ready = Try("IsReadyToMove", function() return pUnit:IsReadyToMove() end)
+            if not (okR and ready == true) then return false, "asleep" end
+            -- IsReadyToMove() says this unit isn't really parked (likely Alert,
+            -- idling with no threat detected, not a durable Sleep/Fortify) --
+            -- fall through to the strength check below instead of excluding it.
+        end
     end
     local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
     local isAwake = okAct and ActivityTypes ~= nil and act == ActivityTypes.ACTIVITY_AWAKE

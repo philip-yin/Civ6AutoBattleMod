@@ -64,7 +64,7 @@ CombatResultParameters = {
 -- ---------------------------------------------------------------------------
 -- spec: { id, x, y, combat, ranged, bombard, range, religious, damage,
 --         unitType, domain, formationClass, promotionClass, moves, attacks, dead,
---         fortifyTurns, activityType }
+--         fortifyTurns, activityType, isReadyToMove }
 function M.makeUnit(spec)
     local u = {}
     local s = spec
