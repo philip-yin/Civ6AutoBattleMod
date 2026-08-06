@@ -81,19 +81,35 @@ end
 --    refused  -- units in range whose shot the engine refused (LOS/other)
 --    moved    -- units that repositioned toward a target (advance / move&shoot)
 --    held     -- units that just held (no viable action)
+--
+--  m_excluded: units matched `want(u)` (right family for this button) but were
+--  dropped BEFORE ever being processed -- IsEligibleUnit rejected them (asleep,
+--  fortified, recon, no offensive strength, ...) or they'd already used all
+--  their moves/attacks this turn ("usedUp"). These units previously vanished
+--  with ZERO trace anywhere (not even the old "skipped" counter distinguished
+--  why), which made "a ready-looking unit did nothing" undiagnosable without a
+--  log file. Keyed by reason string (see IsEligibleUnit's second return value).
 -- ---------------------------------------------------------------------------
 local m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+local m_excluded = {}
 
 local function DiagReset()
     m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0 }
+    m_excluded = {}
 end
 
 local function Diag(key)
     if m_diag[key] ~= nil then m_diag[key] = m_diag[key] + 1 end
 end
 
+local function DiagExclude(reason)
+    m_excluded[reason] = (m_excluded[reason] or 0) + 1
+end
+
 -- Public: a compact one-line summary of the last pass, for the panel status line.
--- e.g. "fired 2 | held 1 | no target 1". Empty string if nothing of note.
+-- e.g. "fired 2 | held 1 | no target 1 | excluded: fortified 1". Empty string
+-- if nothing of note. The "excluded" breakdown answers "why did a unit that
+-- looked ready do nothing at all" without needing Lua.log.
 function AutoBattle_LastDiag()
     local parts = {}
     if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
@@ -101,6 +117,18 @@ function AutoBattle_LastDiag()
     if m_diag.refused  > 0 then table.insert(parts, "refused "   .. m_diag.refused)  end
     if m_diag.noTarget > 0 then table.insert(parts, "no target " .. m_diag.noTarget) end
     if m_diag.held     > 0 then table.insert(parts, "held "      .. m_diag.held)     end
+
+    local excludeKeys = {}
+    for reason, _ in pairs(m_excluded) do table.insert(excludeKeys, reason) end
+    table.sort(excludeKeys)  -- deterministic order
+    if #excludeKeys > 0 then
+        local exParts = {}
+        for _, reason in ipairs(excludeKeys) do
+            table.insert(exParts, reason .. " " .. m_excluded[reason])
+        end
+        table.insert(parts, "excluded: " .. table.concat(exParts, ", "))
+    end
+
     return table.concat(parts, " | ")
 end
 
@@ -149,20 +177,22 @@ local function IsRecon(pUnit)
     return info ~= nil and info.PromotionClass == "PROMOTION_CLASS_RECON"
 end
 
--- Returns true for a unit we should auto-control (military combat or religious).
+-- Returns true for a unit we should auto-control (military combat or religious),
+-- plus a second "reason" string when it returns false -- used purely for
+-- on-panel diagnostics (this build can't write Lua.log; see Diag/m_diag below).
 -- Filter = "has offensive strength" (combat / ranged / religious) MINUS explicit
 -- role exclusions (recon). Civilians (Builder, Settler, Trader, Great People,
 -- Spy, etc.) have zero combat strength and are naturally excluded. Unknown/modded
 -- combat units are included by default (graceful).
 local function IsEligibleUnit(pUnit)
-    if pUnit == nil then return false end
-    if pUnit:IsDead() or pUnit:IsDelayedDeath() then return false end
+    if pUnit == nil then return false, "nil" end
+    if pUnit:IsDead() or pUnit:IsDelayedDeath() then return false, "dead" end
 
     local info = GameInfo.Units[pUnit:GetUnitType()]
-    if info == nil then return false end
+    if info == nil then return false, "unknownType" end
 
     -- Explicit exclusions: recon units are skipped even though they have combat.
-    if IsRecon(pUnit) then return false end
+    if IsRecon(pUnit) then return false, "recon" end
 
     -- MANUALLY PARKED units are left completely alone by the mod (both Run buttons,
     -- all modes): a unit you Sleep (Z) or Fortify stays put. NOTE: "fortify until
@@ -181,11 +211,11 @@ local function IsEligibleUnit(pUnit)
     if UnitManager ~= nil and UnitManager.GetActivityType ~= nil and ActivityTypes ~= nil then
         local ok, a = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
         if ok then act = a; okAct = true end
-        if ok and a == ActivityTypes.ACTIVITY_SLEEP then return false end
+        if ok and a == ActivityTypes.ACTIVITY_SLEEP then return false, "asleep" end
     end
     local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
     local isAwake = okAct and ActivityTypes ~= nil and act == ActivityTypes.ACTIVITY_AWAKE
-    if okF and fort ~= nil and fort > 0 and not isAwake then return false end
+    if okF and fort ~= nil and fort > 0 and not isAwake then return false, "fortified" end
 
     -- Has offensive capability of some kind?
     local combat = pUnit:GetCombat()
@@ -197,7 +227,7 @@ local function IsEligibleUnit(pUnit)
     if (combat and combat > 0) or (rangedCombat and rangedCombat > 0) or (religiousCombat and religiousCombat > 0) then
         return true
     end
-    return false
+    return false, "noStrength"
 end
 
 local function IsReligious(pUnit)
@@ -1694,15 +1724,26 @@ local function RunPassFiltered(label, want, act)
 
     local processed = 0
     -- Snapshot units first, since operations can mutate the collection. `want`
-    -- filters which family this pass handles; `act` runs one unit.
+    -- filters which family this pass handles; `act` runs one unit. Check `want`
+    -- FIRST: a unit belonging to the OTHER button's family (e.g. a ranged unit
+    -- during the melee pass) is normal routing, not an exclusion worth logging.
+    -- Only units that DO belong to this pass get an eligibility/usage reason
+    -- recorded via DiagExclude, so "excluded: fortified 1" on the status line
+    -- always means a unit of the right family silently did nothing.
     local unitList = {}
     local skipped = 0
     for _, u in pUnits:Members() do
-        if IsEligibleUnit(u) and want(u) then
-            if CanStillAct(u) then
-                table.insert(unitList, { unit = u, priority = GetExecutionPriority(u) })
+        if want(u) then
+            local eligible, reason = IsEligibleUnit(u)
+            if eligible then
+                if CanStillAct(u) then
+                    table.insert(unitList, { unit = u, priority = GetExecutionPriority(u) })
+                else
+                    skipped = skipped + 1  -- already used by the player this turn
+                    DiagExclude("usedUp")
+                end
             else
-                skipped = skipped + 1  -- already used by the player this turn
+                DiagExclude(reason or "ineligible")
             end
         end
     end

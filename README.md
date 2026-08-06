@@ -165,7 +165,15 @@ included by default.
   pending ranged shot from last turn — every pass is a manual button click.
 - The status line shows a breakdown of the last pass's outcome (e.g.
   `fired 2 | moved 1 | held 1`) so you can tell at a glance whether units
-  actually acted.
+  actually acted. It also reports units of this pass's family that never got
+  processed at all, as `excluded: <reason> <count>` — e.g. `excluded: fortified
+  1, recon 1` — so a unit that looks ready but does nothing (no move, no
+  Fortify/Sleep) is diagnosable without a log file. Reasons: `recon` (Scout/
+  Skirmisher/Ranger, always excluded), `fortified` / `asleep` (manually parked —
+  wake it to re-include it), `usedUp` (already spent its moves/attacks this
+  turn), `noStrength` (zero combat/ranged/religious strength), `dead` /
+  `unknownType` (rare edge cases). Only reflects the family of the button you
+  just clicked — click the other button to see its own breakdown.
 
 ## Debugging (important — first-run API check)
 
