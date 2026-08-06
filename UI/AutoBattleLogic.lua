@@ -1667,8 +1667,19 @@ local function ExecuteRanged(pUnit, selfPlayerId)
         DebugLog(string.format("    ranged firing tile (%s,%s) rejected; trying next", S(fp.x), S(fp.y)))
     end
 
-    -- 3) No shot and no clear firing move -> wait.
-    DebugLog("  ranged: cannot shoot or reposition cleanly -> wait")
+    -- 3) No firing plot reachable this turn: the target is visible but out of
+    --    movement+range. Don't just sit -- close the distance with full movement
+    --    (same helper melee's "advance" action uses) so the unit isn't frozen
+    --    turn after turn waiting for the enemy to wander into range. Only fall
+    --    back to wait if even that move fails/rejects.
+    if AdvanceTowardTarget(pUnit, tgt) then
+        DebugLog("  ranged: no firing plot in range -> advance toward target")
+        Diag("moved")
+        return true
+    end
+
+    -- 4) No shot and no clear firing move or advance -> wait.
+    DebugLog("  ranged: cannot shoot, reposition, or advance -> wait")
     Diag("held")
     DoHold(pUnit)
     return false
