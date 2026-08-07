@@ -109,6 +109,16 @@ local m_excluded = {}
 local m_traceLines = {}
 local MAX_TRACE_LINES = 8  -- cap so the status line can't grow unbounded
 
+-- Tracks units whose "advance"/"moveattack" MOVE_TO was accepted by the engine
+-- but whose position hadn't changed by the time we checked -- keyed by unit ID
+-- -> {x=, y=}. Deliberately SURVIVES DiagReset (unlike m_traceLines): a single
+-- accepted-but-unmoved reading is usually just RequestOperation's one-frame
+-- async lag and stays quiet, but if the SAME unit is still at the SAME spot on
+-- a LATER Run Now click, that lag should have long since resolved -- confirmed
+-- in-game as a real, repeatable failure (units that must end their move
+-- adjacent to an enemy with no movement left to also attack), not noise.
+local m_stuckAdvance = {}
+
 local function DiagReset()
     m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
     m_excluded = {}
@@ -211,25 +221,43 @@ local function TraceProblemText(action, opResult, moved, reason, cands)
         return "action was rejected, held instead"
     end
     -- Engine accepted the operation, but the unit's position didn't actually
-    -- change by the time we checked. NOT surfaced: RequestOperation is async
-    -- and this read happens synchronously right after issuing it, so this
-    -- fires constantly for units that are, in fact, moving fine -- a false
-    -- positive, not a real problem. There's no reliable way from here to tell
-    -- "just hasn't resolved yet" apart from "genuinely stuck" without an
-    -- unacceptable false-positive rate, so this outcome stays quiet.
+    -- change by the time we checked. A single occurrence is usually just
+    -- RequestOperation's one-frame async lag -- handled separately in Trace()
+    -- via m_stuckAdvance, which only surfaces this on a CONFIRMED repeat (same
+    -- unit, same spot, a later click), not on first sight.
     return nil
 end
 
--- Record one unit's outcome for this pass, IF it's worth surfacing. Only
--- problem outcomes (engine-rejected action) get a line -- routine successful
--- attacks/moves are already reflected in the fired/moved counts and don't
--- need repeating. Uses the unit's display name (e.g. "Warrior"), never a raw
--- unit ID, since there's no in-game way to map an ID back to what's on screen.
+-- Record one unit's outcome for this pass, IF it's worth surfacing. Uses the
+-- unit's display name (e.g. "Warrior"), never a raw unit ID, since there's no
+-- in-game way to map an ID back to what's on screen.
 local function Trace(pUnit, action, fromX, fromY, opResult, reason, cands)
-    if #m_traceLines >= MAX_TRACE_LINES then return end
     local okX, curX = pcall(function() return pUnit:GetX() end)
     local okY, curY = pcall(function() return pUnit:GetY() end)
     local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
+
+    -- Accepted move, position unchanged: only surfaced if the SAME unit was
+    -- already stuck at this SAME spot on a PRIOR pass (a later Run Now click,
+    -- not later this same pass) -- a first occurrence is likely just this
+    -- click's async lag and stays quiet.
+    if opResult and moved == false and (action == "advance" or action == "moveattack") then
+        local id = pUnit:GetID()
+        local prior = m_stuckAdvance[id]
+        m_stuckAdvance[id] = { x = curX, y = curY }
+        if #m_traceLines < MAX_TRACE_LINES
+           and prior ~= nil and prior.x == curX and prior.y == curY then
+            table.insert(m_traceLines, UnitDisplayName(pUnit)
+                .. ": still hasn't moved after 2+ tries -- may need more movement to close the last step")
+        end
+        return
+    end
+
+    -- Any other outcome clears this unit's stuck-tracking -- it moved,
+    -- attacked, or is deliberately held, so a future "accepted but unmoved"
+    -- reading should be judged fresh, not against old state.
+    m_stuckAdvance[pUnit:GetID()] = nil
+
+    if #m_traceLines >= MAX_TRACE_LINES then return end
     local problem = TraceProblemText(action, opResult, moved, reason, cands)
     if problem == nil then return end
     table.insert(m_traceLines, UnitDisplayName(pUnit) .. ": " .. problem)
@@ -1187,34 +1215,32 @@ local function DoAttackAt(pUnit, x, y)
     end
 end
 
--- Confirmed in-game: MOVE_TO + ATTACK moves units more reliably overall than
--- plain MOVE_TO (matches the base game's own click-to-move, which always sets
--- ATTACK -- see Civ6Common.lua RequestMoveOperation). So ATTACK is tried
--- FIRST. Known tradeoff: ATTACK's real semantics (see CanAttackThisTurn above)
--- require enough leftover movement to complete an attack after arriving, so a
--- unit that must spend its ENTIRE movement just to reach an adjacent tile can
--- get an ATTACK-flagged MOVE_TO rejected even though a plain reposition would
--- have been fine. Falling back to a plain MOVE_TO on rejection covers that
--- case without giving up ATTACK's better reliability for the common case.
-function DoMoveTo(pUnit, x, y)  -- assigns to the forward-declared local
+-- Confirmed in-game: MOVE_TO + ATTACK moves units far more reliably overall
+-- than plain MOVE_TO (matches the base game's own click-to-move, which always
+-- sets ATTACK -- see Civ6Common.lua RequestMoveOperation's "don't early out if
+-- the destination is blocked... but is in the fog" comment -- ATTACK relaxes
+-- the pathfinder's early-out behavior generally, not just for real attacks).
+-- BUT: ATTACK also carries a stricter "movement to spare to complete an
+-- attack" requirement specifically when the resulting position ends up
+-- adjacent to a hostile (see CanAttackThisTurn above). AdvanceTowardTarget is
+-- ONLY ever called when we've already established the unit can't attack this
+-- turn -- so when its candidate tile happens to be adjacent to the target, an
+-- ATTACK-flagged move to it can get silently dropped by the engine even
+-- though a plain reposition to that same tile would succeed. Callers pass
+-- noAttack=true for exactly that candidate; everywhere else keeps ATTACK for
+-- its general pathing benefit.
+function DoMoveTo(pUnit, x, y, noAttack)  -- assigns to the forward-declared local
     local params = {}
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
     if UnitOperationMoveModifiers ~= nil then
         local mods = UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION or UnitOperationMoveModifiers.NONE
-        if UnitOperationMoveModifiers.ATTACK ~= nil then
+        if not noAttack and UnitOperationMoveModifiers.ATTACK ~= nil then
             mods = mods + UnitOperationMoveModifiers.ATTACK
         end
         params[UnitOperationTypes.PARAM_MODIFIERS] = mods
     end
-    if TryOperation("MoveToAttack", pUnit, UnitOperationTypes.MOVE_TO, params) then return true end
-
-    DebugLog("    MOVE_TO+ATTACK rejected; retrying as a plain move (likely no movement to spare for a strike)")
-    if UnitOperationMoveModifiers ~= nil then
-        params[UnitOperationTypes.PARAM_MODIFIERS] =
-            UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION or UnitOperationMoveModifiers.NONE
-    end
-    return TryOperation("MoveTo", pUnit, UnitOperationTypes.MOVE_TO, params)
+    return TryOperation(noAttack and "MoveTo" or "MoveToAttack", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
 
 -- Spread religion at a target city (Missionary must be on/adjacent to it; the
@@ -1333,8 +1359,16 @@ local function AdvanceTowardTarget(pUnit, tgt, oneTile)
     end
 
     -- Try closest-to-target first; fall through to the next if the move fails.
+    -- We already know (every caller of AdvanceTowardTarget only reaches here
+    -- when an attack this turn is off the table) that no candidate results in
+    -- an actual strike -- so a candidate landing ADJACENT to the target itself
+    -- (d==1) must skip ATTACK: that's precisely the case where ATTACK's
+    -- "movement to spare to attack" requirement can silently drop an otherwise
+    -- legal reposition (see DoMoveTo). Non-adjacent candidates keep ATTACK for
+    -- its general pathing benefit.
     for _, c in ipairs(cands) do
-        if DoMoveTo(pUnit, c.x, c.y) then return true end
+        local noAttack = (c.d == 1)
+        if DoMoveTo(pUnit, c.x, c.y, noAttack) then return true end
         DebugLog(string.format("    advance dest (%s,%s) rejected; trying next", S(c.x), S(c.y)))
     end
     return false, "blocked", cands
