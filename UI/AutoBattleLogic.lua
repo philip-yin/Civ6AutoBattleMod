@@ -243,7 +243,7 @@ local function Trace(pUnit, action, fromX, fromY, opResult, reason, cands)
             local repeatNote = (prior ~= nil and prior.x == curX and prior.y == curY)
                 and " (still stuck, 2+ tries)" or ""
             table.insert(m_traceLines, UnitDisplayName(pUnit)
-                .. ": move accepted but did not move" .. repeatNote .. FormatCands(cands))
+                .. ": move accepted but did not move" .. repeatNote)
         end
         return
     end
@@ -1294,12 +1294,14 @@ end
 -- Second return value is a reason string on failure ("noMoves" | "blocked"),
 -- used by callers to log an accurate explanation instead of a generic
 -- "rejected/blocked" for what's actually just "nothing left to spend." Third
--- return value is ALWAYS the full list of reachable candidate tiles (closest-
--- to-target first) that GetReachableMovement offered THIS call, regardless of
--- success/failure -- Civ6's Lua API has no per-tile "route" data (no way to
+-- return value, on a "blocked" failure ONLY, is the list of reachable
+-- candidate tiles that GetReachableMovement offered and were tried (closest-
+-- to-target first) -- Civ6's Lua API has no per-tile "route" data (no way to
 -- see the hex-by-hex path the engine would walk to each tile), only this flat
 -- destination list, so this is as close as we can get to "does the engine
 -- even consider a flanking tile reachable, or only the blocked direct one."
+-- Kept OFF the success/still-moving paths deliberately: dumping the full
+-- reachable set on every routine advance was too much noise on the panel.
 local function AdvanceTowardTarget(pUnit, tgt, oneTile)
     local okM, moves = Try("GetMovesRemaining", function() return pUnit:GetMovesRemaining() end)
     if okM and moves ~= nil and not (moves > 0) then return false, "noMoves" end
@@ -1345,7 +1347,7 @@ local function AdvanceTowardTarget(pUnit, tgt, oneTile)
 
     -- Try closest-to-target first; fall through to the next if the move fails.
     for _, c in ipairs(cands) do
-        if DoMoveTo(pUnit, c.x, c.y) then return true, nil, cands end
+        if DoMoveTo(pUnit, c.x, c.y) then return true end
         DebugLog(string.format("    advance dest (%s,%s) rejected; trying next", S(c.x), S(c.y)))
     end
     return false, "blocked", cands
