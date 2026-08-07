@@ -109,16 +109,6 @@ local m_excluded = {}
 local m_traceLines = {}
 local MAX_TRACE_LINES = 8  -- cap so the status line can't grow unbounded
 
--- Tracks units whose "advance"/"moveattack" MOVE_TO was accepted by the engine
--- but whose position hadn't changed by the time we checked -- keyed by unit ID
--- -> {x=, y=} (the position it was stuck at). Deliberately SURVIVES DiagReset
--- (unlike m_traceLines), so we can tell "just async lag from this same click"
--- (first time seeing this unit stuck here -> stay quiet) apart from "genuinely
--- not moving" (still at the SAME spot on a LATER Run Now click -> worth a
--- panel line, since RequestOperation's one-frame lag should have long since
--- resolved by the next click).
-local m_stuckAdvance = {}
-
 local function DiagReset()
     m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
     m_excluded = {}
@@ -198,6 +188,15 @@ local function TraceProblemText(action, opResult, moved, reason, cands)
         if reason == "noMoves" then
             return nil  -- expected: unit is out of moves this turn, not a problem
         end
+        -- Missionary/Apostle-specific reasons, checked before the generic
+        -- "rejected" fallback below since they apply regardless of `action`.
+        if reason == "noTarget" then
+            return "no unconverted city currently visible, held position instead"
+        elseif reason == "noCharges" then
+            return "0 spread charges left (unexpected), held position instead"
+        elseif reason == "spreadRefused" then
+            return "reached city but SPREAD_RELIGION was refused by the engine"
+        end
         local candsText = (reason == "blocked") and FormatCands(cands) or ""
         -- The engine rejected the operation outright.
         if action == "attack" or action == "ranged-attack" then
@@ -206,54 +205,31 @@ local function TraceProblemText(action, opResult, moved, reason, cands)
             return "could not reach firing position, held instead"
         elseif action == "advance" then
             return "could not advance toward enemy (all routes blocked), held position instead" .. candsText
-        elseif action == "spread" or action == "spread-advance-blocked" then
-            return "could not spread religion or advance, held instead" .. candsText
+        elseif action == "spread-advance-blocked" then
+            return "could not advance toward city (all routes blocked), held position instead" .. candsText
         end
         return "action was rejected, held instead"
     end
     -- Engine accepted the operation, but the unit's position didn't actually
-    -- change by the time we checked. Whether this is worth surfacing (vs. just
-    -- async lag from THIS click) depends on whether the SAME unit was already
-    -- stuck here last pass too -- see the stillStuck param, set by Trace() via
-    -- m_stuckAdvance -- so this is handled there, not here.
+    -- change by the time we checked. NOT surfaced: RequestOperation is async
+    -- and this read happens synchronously right after issuing it, so this
+    -- fires constantly for units that are, in fact, moving fine -- a false
+    -- positive, not a real problem. There's no reliable way from here to tell
+    -- "just hasn't resolved yet" apart from "genuinely stuck" without an
+    -- unacceptable false-positive rate, so this outcome stays quiet.
     return nil
 end
 
 -- Record one unit's outcome for this pass, IF it's worth surfacing. Only
--- problem outcomes (engine-rejected action, or an accepted move that hasn't
--- actually moved the unit yet) get a line -- routine successful attacks/moves
--- are already reflected in the fired/moved counts and don't need repeating.
--- Uses the unit's display name (e.g. "Warrior"), never a raw unit ID, since
--- there's no in-game way to map an ID back to what's on screen.
+-- problem outcomes (engine-rejected action) get a line -- routine successful
+-- attacks/moves are already reflected in the fired/moved counts and don't
+-- need repeating. Uses the unit's display name (e.g. "Warrior"), never a raw
+-- unit ID, since there's no in-game way to map an ID back to what's on screen.
 local function Trace(pUnit, action, fromX, fromY, opResult, reason, cands)
+    if #m_traceLines >= MAX_TRACE_LINES then return end
     local okX, curX = pcall(function() return pUnit:GetX() end)
     local okY, curY = pcall(function() return pUnit:GetY() end)
     local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
-
-    -- Engine accepted the MOVE_TO but position is unchanged: report it EVERY
-    -- time, not just on a repeat -- this is a real "the engine said yes but
-    -- the unit didn't go anywhere" outcome, not a harmless one-frame async
-    -- artifact to assume away. Still track repeats via m_stuckAdvance so the
-    -- message can say whether this is a first occurrence or an ongoing stall.
-    if opResult and moved == false and (action == "advance" or action == "moveattack") then
-        local id = pUnit:GetID()
-        local prior = m_stuckAdvance[id]
-        m_stuckAdvance[id] = { x = curX, y = curY }
-        if #m_traceLines < MAX_TRACE_LINES then
-            local repeatNote = (prior ~= nil and prior.x == curX and prior.y == curY)
-                and " (still stuck, 2+ tries)" or ""
-            table.insert(m_traceLines, UnitDisplayName(pUnit)
-                .. ": move accepted but did not move" .. repeatNote)
-        end
-        return
-    end
-
-    -- Any other outcome for this unit clears its stuck-tracking -- it moved,
-    -- attacked, or is being held deliberately, so a future "accepted but
-    -- unmoved" reading for it should be judged fresh, not against old state.
-    m_stuckAdvance[pUnit:GetID()] = nil
-
-    if #m_traceLines >= MAX_TRACE_LINES then return end
     local problem = TraceProblemText(action, opResult, moved, reason, cands)
     if problem == nil then return end
     table.insert(m_traceLines, UnitDisplayName(pUnit) .. ": " .. problem)
@@ -1678,7 +1654,16 @@ end
 function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared local
     local convTargets = GatherConversionTargets(pUnit, selfPlayerId)
     local target = ChooseConversionTarget(convTargets)
-    if target == nil then return false end
+    if target == nil then
+        -- No unconverted city in view at all -- this is the #1 reason a
+        -- Missionary just sits there: GatherConversionTargets only considers
+        -- cities currently VISIBLE to us (IsPlotVisibleTo), so a city outside
+        -- current vision (fog, no unit/border nearby) never becomes a target,
+        -- even if it's known to exist. Surfaced on the panel since silently
+        -- falling through to fortify gave zero indication why.
+        Trace(pUnit, "spread-no-target", pUnit:GetX(), pUnit:GetY(), false, "noTarget")
+        return false
+    end
 
     -- Missionaries are consumed (auto-deleted) the instant their last spread
     -- charge is used (confirmed: Civilopedia's Great People chapter states this
@@ -1689,7 +1674,7 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
     local fromX, fromY = pUnit:GetX(), pUnit:GetY()
     if charges <= 0 then
         DebugLog("  spread: 0 charges left (unexpected for a live unit) -> fortify")
-        Trace(pUnit, "spread-no-charges", fromX, fromY, true)
+        Trace(pUnit, "spread-no-charges", fromX, fromY, false, "noCharges")
         return false
     end
 
@@ -1698,7 +1683,7 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
         target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist), S(charges)))
     if dist <= 1 then
         local ok = DoSpreadReligion(pUnit)
-        Trace(pUnit, "spread", fromX, fromY, ok)
+        Trace(pUnit, "spread", fromX, fromY, ok, "spreadRefused")
         if ok then return true end
         DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> advance instead")
     end
