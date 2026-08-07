@@ -777,8 +777,6 @@ end
 -- -------------------------------------------------------------------------
 -- 31b. Genuinely fortified unit (still ACTIVITY_HOLD, fortifyTurns>0) is
 --      correctly skipped -- no ops issued at all (not even FORTIFY again).
---      The diag string now surfaces WHY, since this previously left a
---      ready-looking unit doing "nothing at all" with zero trace anywhere.
 -- -------------------------------------------------------------------------
 do
     M.reset(); M.localPlayerId = 0
@@ -795,16 +793,10 @@ do
     AutoBattle_RunMelee()
     check("Genuinely fortified unit is skipped (no ops)",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
-    local diag = AutoBattle_LastDiag()
-    check("Fortified exclusion appears on the diag string as 'fortified'",
-        diag:find("excluded: fortified 1") ~= nil, diag)
 end
 
 -- -------------------------------------------------------------------------
--- 31d. Already-used unit (0 moves, 0 attacks remaining) is skipped, and the
---      diag string reports it as "usedUp" -- distinct from "fortified"/
---      "recon"/etc, so a ready-looking unit that did nothing can be told
---      apart from one that's simply out of actions this turn.
+-- 31d. Already-used unit (0 moves, 0 attacks remaining) is skipped.
 -- -------------------------------------------------------------------------
 do
     M.reset(); M.localPlayerId = 0
@@ -815,12 +807,9 @@ do
     M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
-    AutoBattle_RunMelee()  -- see note above test 31b re: reading diag per-button
+    AutoBattle_RunMelee()
     check("Used-up unit is skipped (no ops)",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
-    local diag = AutoBattle_LastDiag()
-    check("Used-up exclusion appears on the diag string as 'usedUp'",
-        diag:find("excluded: usedUp 1") ~= nil, diag)
 end
 
 -- -------------------------------------------------------------------------
@@ -865,9 +854,6 @@ do
     AutoBattle_RunMelee()
     check("Genuinely Sleep'd unit (greyed out) is still excluded (no ops)",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
-    local diag = AutoBattle_LastDiag()
-    check("Sleep exclusion still appears on the diag string as 'asleep'",
-        diag:find("excluded: asleep 1") ~= nil, diag)
 end
 
 -- -------------------------------------------------------------------------
@@ -892,8 +878,7 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 32. Scout (recon, Combat=10) is EXCLUDED -> no ops issued, and the exclusion
---     is now visible on the panel's diag string (previously silent/untraceable).
+-- 32. Scout (recon, Combat=10) is EXCLUDED -> no ops issued.
 -- -------------------------------------------------------------------------
 do
     M.reset(); M.localPlayerId = 0
@@ -905,12 +890,9 @@ do
     M.combatResults["100:200"]=M.makeCombatResult(0,0,20,40)
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
-    AutoBattle_RunMelee()  -- see note above test 31b re: reading diag per-button
+    AutoBattle_RunMelee()
     check("Scout (recon) is excluded from auto-battle",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
-    local diag = AutoBattle_LastDiag()
-    check("Scout exclusion appears on the diag string as 'recon'",
-        diag:find("excluded: recon 1") ~= nil, diag)
 end
 
 -- -------------------------------------------------------------------------

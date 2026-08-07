@@ -109,6 +109,16 @@ local m_excluded = {}
 local m_traceLines = {}
 local MAX_TRACE_LINES = 8  -- cap so the status line can't grow unbounded
 
+-- Tracks units whose "advance"/"moveattack" MOVE_TO was accepted by the engine
+-- but whose position hadn't changed by the time we checked -- keyed by unit ID
+-- -> {x=, y=} (the position it was stuck at). Deliberately SURVIVES DiagReset
+-- (unlike m_traceLines), so we can tell "just async lag from this same click"
+-- (first time seeing this unit stuck here -> stay quiet) apart from "genuinely
+-- not moving" (still at the SAME spot on a LATER Run Now click -> worth a
+-- panel line, since RequestOperation's one-frame lag should have long since
+-- resolved by the next click).
+local m_stuckAdvance = {}
+
 local function DiagReset()
     m_diag = { fired = 0, noTarget = 0, refused = 0, moved = 0, held = 0, deferred = 0 }
     m_excluded = {}
@@ -157,31 +167,38 @@ local function UnitDisplayName(pUnit)
     return "Unit"
 end
 
+-- Formats the reachable-candidate list for the panel log: every DESTINATION
+-- TILE GetReachableMovement offered this unit this call, closest-to-target
+-- first. This is the closest thing to "all routes from A to B" Civ6's Lua API
+-- exposes -- there's no per-tile route/path data available to Lua, only this
+-- flat set of reachable destinations. Printing it lets you check directly
+-- whether a flanking tile around a blocker was even in the engine's own
+-- reachable set, or whether the engine itself only offered the blocked tile.
+local function FormatCands(cands)
+    if cands == nil or #cands == 0 then return "" end
+    local list = {}
+    for _, c in ipairs(cands) do
+        table.insert(list, string.format("(%s,%s)", S(c.x), S(c.y)))
+    end
+    return " [reachable: " .. table.concat(list, ", ") .. "]"
+end
+
 -- Friendly, human-readable explanation for a problem outcome, keyed by the
 -- action string each call site passes. Returns nil for actions/outcomes that
--- aren't worth surfacing on the panel (routine successes). `reason`, when
--- given, distinguishes WHY an advance/moveattack failed ("noMoves" -- the unit
--- has nothing left to spend this turn, incl. zone-of-control lock -- vs.
--- "blocked" -- it had movement but every reachable tile's MOVE_TO was
--- refused, e.g. all occupied by friendlies) so the log doesn't blame "blocked
--- by another unit" on what's actually just an empty movement pool. `cands`,
--- when given (only on a "blocked" advance), is the full list of {x,y,d}
--- candidate tiles that were tried and rejected -- appended to the message so
--- the panel shows what alternate routes the engine actually considered (e.g.
--- to check whether a flanking tile was even in GetReachableMovement's set).
+-- aren't worth surfacing on the panel (routine successes OR expected holds).
+-- `reason`, when given, distinguishes WHY an advance/moveattack failed
+-- ("noMoves" -- the unit has nothing left to spend this turn, incl.
+-- zone-of-control lock -- vs. "blocked" -- it had movement but every
+-- reachable tile's MOVE_TO was refused, e.g. all occupied by friendlies).
+-- "noMoves" is deliberately NOT surfaced: it's the expected, uninteresting
+-- case (the unit is genuinely out of moves this turn), and including it just
+-- buries the actually-actionable "blocked" lines in noise.
 local function TraceProblemText(action, opResult, moved, reason, cands)
     if not opResult then
         if reason == "noMoves" then
-            return "no movement left, held position instead"
+            return nil  -- expected: unit is out of moves this turn, not a problem
         end
-        local candsText = ""
-        if reason == "blocked" and cands ~= nil and #cands > 0 then
-            local list = {}
-            for _, c in ipairs(cands) do
-                table.insert(list, string.format("(%s,%s)", S(c.x), S(c.y)))
-            end
-            candsText = " [tried: " .. table.concat(list, ", ") .. "]"
-        end
+        local candsText = (reason == "blocked") and FormatCands(cands) or ""
         -- The engine rejected the operation outright.
         if action == "attack" or action == "ranged-attack" then
             return "could not attack, held position instead"
@@ -195,12 +212,10 @@ local function TraceProblemText(action, opResult, moved, reason, cands)
         return "action was rejected, held instead"
     end
     -- Engine accepted the operation, but the unit's position didn't actually
-    -- change by the time we checked -- RequestOperation is async, so this is
-    -- USUALLY just the move still resolving, not a real failure. Still worth a
-    -- one-line note rather than silently counting it as a normal move.
-    if moved == false and (action == "advance" or action == "moveattack") then
-        return "move accepted but not yet completed (still resolving)"
-    end
+    -- change by the time we checked. Whether this is worth surfacing (vs. just
+    -- async lag from THIS click) depends on whether the SAME unit was already
+    -- stuck here last pass too -- see the stillStuck param, set by Trace() via
+    -- m_stuckAdvance -- so this is handled there, not here.
     return nil
 end
 
@@ -211,49 +226,48 @@ end
 -- Uses the unit's display name (e.g. "Warrior"), never a raw unit ID, since
 -- there's no in-game way to map an ID back to what's on screen.
 local function Trace(pUnit, action, fromX, fromY, opResult, reason, cands)
-    if #m_traceLines >= MAX_TRACE_LINES then return end
     local okX, curX = pcall(function() return pUnit:GetX() end)
     local okY, curY = pcall(function() return pUnit:GetY() end)
     local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
+
+    -- Engine accepted the MOVE_TO but position is unchanged: report it EVERY
+    -- time, not just on a repeat -- this is a real "the engine said yes but
+    -- the unit didn't go anywhere" outcome, not a harmless one-frame async
+    -- artifact to assume away. Still track repeats via m_stuckAdvance so the
+    -- message can say whether this is a first occurrence or an ongoing stall.
+    if opResult and moved == false and (action == "advance" or action == "moveattack") then
+        local id = pUnit:GetID()
+        local prior = m_stuckAdvance[id]
+        m_stuckAdvance[id] = { x = curX, y = curY }
+        if #m_traceLines < MAX_TRACE_LINES then
+            local repeatNote = (prior ~= nil and prior.x == curX and prior.y == curY)
+                and " (still stuck, 2+ tries)" or ""
+            table.insert(m_traceLines, UnitDisplayName(pUnit)
+                .. ": move accepted but did not move" .. repeatNote .. FormatCands(cands))
+        end
+        return
+    end
+
+    -- Any other outcome for this unit clears its stuck-tracking -- it moved,
+    -- attacked, or is being held deliberately, so a future "accepted but
+    -- unmoved" reading for it should be judged fresh, not against old state.
+    m_stuckAdvance[pUnit:GetID()] = nil
+
+    if #m_traceLines >= MAX_TRACE_LINES then return end
     local problem = TraceProblemText(action, opResult, moved, reason, cands)
     if problem == nil then return end
     table.insert(m_traceLines, UnitDisplayName(pUnit) .. ": " .. problem)
 end
 
--- Public: a compact summary of the last pass, for the panel status line.
--- e.g. "fired 2 | held 1 | no target 1 | excluded: fortified 1". Empty string
--- if nothing of note. The "excluded" breakdown answers "why did a unit that
--- looked ready do nothing at all" without needing Lua.log. Per-unit problem
--- lines (see Trace()) are appended after, one per line, named by unit type
--- (e.g. "Warrior: could not advance toward enemy, held position instead") --
--- only units that hit a real problem get a line; routine successes don't.
+-- Public: the panel status line for the last pass. Deliberately silent on a
+-- clean pass (empty string) -- ONLY per-unit problem lines (see Trace()) are
+-- shown, named by unit type (e.g. "Warrior: could not advance toward enemy
+-- (all routes blocked), held position instead [reachable: (6,4), (6,5)]").
+-- No routine fired/moved/held/excluded counts: those numbers don't tell you
+-- WHICH unit needs attention, and drowned out the lines that do.
 function AutoBattle_LastDiag()
-    local parts = {}
-    if m_diag.fired    > 0 then table.insert(parts, "fired "     .. m_diag.fired)    end
-    if m_diag.moved    > 0 then table.insert(parts, "moved "     .. m_diag.moved)    end
-    if m_diag.refused  > 0 then table.insert(parts, "refused "   .. m_diag.refused)  end
-    if m_diag.noTarget > 0 then table.insert(parts, "no target " .. m_diag.noTarget) end
-    if m_diag.held     > 0 then table.insert(parts, "held "      .. m_diag.held)     end
-    if m_diag.deferred > 0 then table.insert(parts, "deferred "  .. m_diag.deferred) end
-
-    local excludeKeys = {}
-    for reason, _ in pairs(m_excluded) do table.insert(excludeKeys, reason) end
-    table.sort(excludeKeys)  -- deterministic order
-    if #excludeKeys > 0 then
-        local exParts = {}
-        for _, reason in ipairs(excludeKeys) do
-            table.insert(exParts, reason .. " " .. m_excluded[reason])
-        end
-        table.insert(parts, "excluded: " .. table.concat(exParts, ", "))
-    end
-
-    local summary = table.concat(parts, " | ")
-    if #m_traceLines > 0 then
-        local trace = table.concat(m_traceLines, "\n")
-        if summary ~= "" then return summary .. "\n" .. trace end
-        return trace
-    end
-    return summary
+    if #m_traceLines == 0 then return "" end
+    return table.concat(m_traceLines, "\n")
 end
 
 local function Clamp01(v)
@@ -1202,14 +1216,22 @@ function DoMoveTo(pUnit, x, y)  -- assigns to the forward-declared local
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
     if UnitOperationMoveModifiers ~= nil then
-        -- MOVE_IGNORE_UNEXPLORED_DESTINATION: let the engine path toward a fogged
-        -- destination instead of clamping the move to the last explored tile. Without
-        -- it, advancing/exploring toward unrevealed territory stops short and leaves
-        -- movement unused (a 4-move unit only steps 1-2 tiles). Fall back to NONE if
-        -- the modifier enum isn't present on this build.
+        -- Mirrors the base game's OWN plain move-to-plot path (Civ6Common.lua
+        -- RequestMoveOperation, land/naval branch): it combines ATTACK +
+        -- MOVE_IGNORE_UNEXPLORED_DESTINATION for every click-to-move, not just
+        -- actual attacks -- per its own comment, "allow for attacking and
+        -- don't early out if the destination is blocked, etc., but is in the
+        -- fog." Without ATTACK here, a destination reachable only by pathing
+        -- AROUND another unit (e.g. flanking a friendly blocking the direct
+        -- line) can get accepted by CanStartOperation/RequestOperation but
+        -- then never actually complete the move -- exactly the "move accepted
+        -- but did not move" symptom this was missing before.
         local mods = UnitOperationMoveModifiers.NONE
         if UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION ~= nil then
             mods = UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION
+        end
+        if UnitOperationMoveModifiers.ATTACK ~= nil then
+            mods = mods + UnitOperationMoveModifiers.ATTACK
         end
         params[UnitOperationTypes.PARAM_MODIFIERS] = mods
     end
@@ -1272,10 +1294,12 @@ end
 -- Second return value is a reason string on failure ("noMoves" | "blocked"),
 -- used by callers to log an accurate explanation instead of a generic
 -- "rejected/blocked" for what's actually just "nothing left to spend." Third
--- return value, on a "blocked" failure, is the list of candidate tiles that
--- were tried (closest-to-target first, each already rejected by the engine)
--- so callers can put the actual alternate routes on the panel log instead of
--- just "blocked" -- e.g. to show whether a flanking tile was even considered.
+-- return value is ALWAYS the full list of reachable candidate tiles (closest-
+-- to-target first) that GetReachableMovement offered THIS call, regardless of
+-- success/failure -- Civ6's Lua API has no per-tile "route" data (no way to
+-- see the hex-by-hex path the engine would walk to each tile), only this flat
+-- destination list, so this is as close as we can get to "does the engine
+-- even consider a flanking tile reachable, or only the blocked direct one."
 local function AdvanceTowardTarget(pUnit, tgt, oneTile)
     local okM, moves = Try("GetMovesRemaining", function() return pUnit:GetMovesRemaining() end)
     if okM and moves ~= nil and not (moves > 0) then return false, "noMoves" end
@@ -1321,7 +1345,7 @@ local function AdvanceTowardTarget(pUnit, tgt, oneTile)
 
     -- Try closest-to-target first; fall through to the next if the move fails.
     for _, c in ipairs(cands) do
-        if DoMoveTo(pUnit, c.x, c.y) then return true end
+        if DoMoveTo(pUnit, c.x, c.y) then return true, nil, cands end
         DebugLog(string.format("    advance dest (%s,%s) rejected; trying next", S(c.x), S(c.y)))
     end
     return false, "blocked", cands
