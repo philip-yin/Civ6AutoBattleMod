@@ -159,18 +159,38 @@ end
 
 -- Friendly, human-readable explanation for a problem outcome, keyed by the
 -- action string each call site passes. Returns nil for actions/outcomes that
--- aren't worth surfacing on the panel (routine successes).
-local function TraceProblemText(action, opResult, moved)
+-- aren't worth surfacing on the panel (routine successes). `reason`, when
+-- given, distinguishes WHY an advance/moveattack failed ("noMoves" -- the unit
+-- has nothing left to spend this turn, incl. zone-of-control lock -- vs.
+-- "blocked" -- it had movement but every reachable tile's MOVE_TO was
+-- refused, e.g. all occupied by friendlies) so the log doesn't blame "blocked
+-- by another unit" on what's actually just an empty movement pool. `cands`,
+-- when given (only on a "blocked" advance), is the full list of {x,y,d}
+-- candidate tiles that were tried and rejected -- appended to the message so
+-- the panel shows what alternate routes the engine actually considered (e.g.
+-- to check whether a flanking tile was even in GetReachableMovement's set).
+local function TraceProblemText(action, opResult, moved, reason, cands)
     if not opResult then
+        if reason == "noMoves" then
+            return "no movement left, held position instead"
+        end
+        local candsText = ""
+        if reason == "blocked" and cands ~= nil and #cands > 0 then
+            local list = {}
+            for _, c in ipairs(cands) do
+                table.insert(list, string.format("(%s,%s)", S(c.x), S(c.y)))
+            end
+            candsText = " [tried: " .. table.concat(list, ", ") .. "]"
+        end
         -- The engine rejected the operation outright.
         if action == "attack" or action == "ranged-attack" then
             return "could not attack, held position instead"
         elseif action == "moveattack" or action == "moveattack-fallback-attack" then
             return "could not reach firing position, held instead"
         elseif action == "advance" then
-            return "could not advance toward enemy, held position instead"
+            return "could not advance toward enemy (all routes blocked), held position instead" .. candsText
         elseif action == "spread" or action == "spread-advance-blocked" then
-            return "could not spread religion or advance, held instead"
+            return "could not spread religion or advance, held instead" .. candsText
         end
         return "action was rejected, held instead"
     end
@@ -190,12 +210,12 @@ end
 -- are already reflected in the fired/moved counts and don't need repeating.
 -- Uses the unit's display name (e.g. "Warrior"), never a raw unit ID, since
 -- there's no in-game way to map an ID back to what's on screen.
-local function Trace(pUnit, action, fromX, fromY, opResult)
+local function Trace(pUnit, action, fromX, fromY, opResult, reason, cands)
     if #m_traceLines >= MAX_TRACE_LINES then return end
     local okX, curX = pcall(function() return pUnit:GetX() end)
     local okY, curY = pcall(function() return pUnit:GetY() end)
     local moved = (okX and okY and (curX ~= fromX or curY ~= fromY))
-    local problem = TraceProblemText(action, opResult, moved)
+    local problem = TraceProblemText(action, opResult, moved, reason, cands)
     if problem == nil then return end
     table.insert(m_traceLines, UnitDisplayName(pUnit) .. ": " .. problem)
 end
@@ -1236,7 +1256,30 @@ end
 -- FALLBACK: candidate plots are tried in order of closeness-to-target; if the
 -- best one's MOVE_TO is rejected (path blocked by a unit, engine refusal, etc.)
 -- we try the next-best, so a unit isn't left frozen when its ideal tile fails.
+--
+-- MOVES-REMAINING GUARD: mirrors the base game's own RealizeMoveRadius (Assets/
+-- UI/WorldView/SelectedUnit.lua): "if not (unit:GetMovesRemaining() > 0) then
+-- return" BEFORE ever calling GetReachableMovement. Without this, a unit with 0
+-- moves left this turn (already spent them, or locked by zone-of-control per
+-- HasMovedIntoZOC) falls through to GetReachablePlots' single-tile fallback
+-- (its own position), which AdvanceTowardTarget's candidate filter then
+-- excludes as "the current tile" -- leaving an EMPTY candidate list that gets
+-- misreported as "every tile rejected / blocked by a friendly" when the real
+-- reason is simply no movement left. Worse, MOVE_TO itself is NOT gated by
+-- moves-remaining in Civ6 (that's how "queue a move for next turn" works for
+-- the player too) -- so without this guard, DoMoveTo can still succeed and
+-- silently queue a move for NEXT turn instead of holding this unit now.
+-- Second return value is a reason string on failure ("noMoves" | "blocked"),
+-- used by callers to log an accurate explanation instead of a generic
+-- "rejected/blocked" for what's actually just "nothing left to spend." Third
+-- return value, on a "blocked" failure, is the list of candidate tiles that
+-- were tried (closest-to-target first, each already rejected by the engine)
+-- so callers can put the actual alternate routes on the panel log instead of
+-- just "blocked" -- e.g. to show whether a flanking tile was even considered.
 local function AdvanceTowardTarget(pUnit, tgt, oneTile)
+    local okM, moves = Try("GetMovesRemaining", function() return pUnit:GetMovesRemaining() end)
+    if okM and moves ~= nil and not (moves > 0) then return false, "noMoves" end
+
     local reach = GetReachablePlots(pUnit)
     local ux, uy = pUnit:GetX(), pUnit:GetY()
 
@@ -1254,12 +1297,34 @@ local function AdvanceTowardTarget(pUnit, tgt, oneTile)
         return (a.x * 1000 + a.y) < (b.x * 1000 + b.y)  -- stable tiebreak
     end)
 
+    if #cands == 0 then
+        -- Had moves left (checked above) but every reachable plot IS the
+        -- current tile -- e.g. HasMovedIntoZOC locked it in place this turn.
+        DebugLog(string.format("    advance: 0 reachable tiles besides current (%s,%s), moves=%s",
+            S(ux), S(uy), S(moves)))
+        return false, "noMoves"
+    end
+
+    -- Log the full candidate list BEFORE trying any -- when a unit that should
+    -- have an open flanking route ends up "blocked", this is the first thing to
+    -- check: does the engine's own GetReachableMovement even include the flank
+    -- tile, or is the unit's real reachable set smaller than expected (terrain
+    -- cost, enemy zone of control, etc. -- not a bug in this fallback loop)?
+    do
+        local list = {}
+        for _, c in ipairs(cands) do
+            table.insert(list, string.format("(%s,%s)d%s", S(c.x), S(c.y), S(c.d)))
+        end
+        DebugLog(string.format("    advance: %d reachable candidate(s) from (%s,%s) moves=%s: %s",
+            #cands, S(ux), S(uy), S(moves), table.concat(list, " ")))
+    end
+
     -- Try closest-to-target first; fall through to the next if the move fails.
     for _, c in ipairs(cands) do
         if DoMoveTo(pUnit, c.x, c.y) then return true end
         DebugLog(string.format("    advance dest (%s,%s) rejected; trying next", S(c.x), S(c.y)))
     end
-    return false
+    return false, "blocked", cands
 end
 
 -- True if a plot is empty of OTHER units (so a ranged unit repositioning there
@@ -1559,14 +1624,15 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
     elseif action == "advance" then
         -- Advance using FULL movement toward the target (no 1-tile cap). If nothing
         -- was attackable this turn, close the distance as far as movement allows.
-        local ok = AdvanceTowardTarget(pUnit, tgt)
-        Trace(pUnit, "advance", fromX, fromY, ok)
+        local ok, reason, cands = AdvanceTowardTarget(pUnit, tgt)
+        Trace(pUnit, "advance", fromX, fromY, ok, reason, cands)
         if ok then
             Diag("moved")
         else
-            -- Every reachable tile was rejected (commonly: all occupied by
-            -- friendlies already stacked toward the target). Hold instead of
-            -- silently doing nothing.
+            -- Either no movement left this turn (reason="noMoves") or every
+            -- reachable tile was rejected (reason="blocked", commonly: all
+            -- occupied by friendlies already stacked toward the target).
+            -- Hold instead of silently doing nothing.
             Diag("held")
             DebugLog("  advance blocked (no reachable tile accepted) -> fortify")
             DoHold(pUnit)
@@ -1610,8 +1676,9 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
         if ok then return true end
         DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> advance instead")
     end
-    if not AdvanceTowardTarget(pUnit, target) then
-        Trace(pUnit, "spread-advance-blocked", fromX, fromY, false)
+    local advOk, advReason, advCands = AdvanceTowardTarget(pUnit, target)
+    if not advOk then
+        Trace(pUnit, "spread-advance-blocked", fromX, fromY, false, advReason, advCands)
     end
     return true
 end
