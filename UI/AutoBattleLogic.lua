@@ -1187,37 +1187,48 @@ local function DoAttackAt(pUnit, x, y)
     end
 end
 
+-- Confirmed in-game: MOVE_TO + ATTACK moves units more reliably overall than
+-- plain MOVE_TO (matches the base game's own click-to-move, which always sets
+-- ATTACK -- see Civ6Common.lua RequestMoveOperation). So ATTACK is tried
+-- FIRST. Known tradeoff: ATTACK's real semantics (see CanAttackThisTurn above)
+-- require enough leftover movement to complete an attack after arriving, so a
+-- unit that must spend its ENTIRE movement just to reach an adjacent tile can
+-- get an ATTACK-flagged MOVE_TO rejected even though a plain reposition would
+-- have been fine. Falling back to a plain MOVE_TO on rejection covers that
+-- case without giving up ATTACK's better reliability for the common case.
 function DoMoveTo(pUnit, x, y)  -- assigns to the forward-declared local
     local params = {}
     params[UnitOperationTypes.PARAM_X] = x
     params[UnitOperationTypes.PARAM_Y] = y
     if UnitOperationMoveModifiers ~= nil then
-        -- Mirrors the base game's OWN plain move-to-plot path (Civ6Common.lua
-        -- RequestMoveOperation, land/naval branch): it combines ATTACK +
-        -- MOVE_IGNORE_UNEXPLORED_DESTINATION for every click-to-move, not just
-        -- actual attacks -- per its own comment, "allow for attacking and
-        -- don't early out if the destination is blocked, etc., but is in the
-        -- fog." Without ATTACK here, a destination reachable only by pathing
-        -- AROUND another unit (e.g. flanking a friendly blocking the direct
-        -- line) can get accepted by CanStartOperation/RequestOperation but
-        -- then never actually complete the move -- exactly the "move accepted
-        -- but did not move" symptom this was missing before.
-        local mods = UnitOperationMoveModifiers.NONE
-        if UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION ~= nil then
-            mods = UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION
-        end
+        local mods = UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION or UnitOperationMoveModifiers.NONE
         if UnitOperationMoveModifiers.ATTACK ~= nil then
             mods = mods + UnitOperationMoveModifiers.ATTACK
         end
         params[UnitOperationTypes.PARAM_MODIFIERS] = mods
     end
+    if TryOperation("MoveToAttack", pUnit, UnitOperationTypes.MOVE_TO, params) then return true end
+
+    DebugLog("    MOVE_TO+ATTACK rejected; retrying as a plain move (likely no movement to spare for a strike)")
+    if UnitOperationMoveModifiers ~= nil then
+        params[UnitOperationTypes.PARAM_MODIFIERS] =
+            UnitOperationMoveModifiers.MOVE_IGNORE_UNEXPLORED_DESTINATION or UnitOperationMoveModifiers.NONE
+    end
     return TryOperation("MoveTo", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
 
--- Spread religion at the unit's current plot (Missionary must be on/adjacent to
--- the target city; the engine validates via CanStartOperation).
-local function DoSpreadReligion(pUnit)
-    return TryOperation("SpreadReligion", pUnit, UnitOperationTypes.SPREAD_RELIGION, nil)
+-- Spread religion at a target city (Missionary must be on/adjacent to it; the
+-- engine validates via CanStartOperation). PARAM_X/Y identify WHICH city to
+-- spread to -- every other targeted operation in this file (MOVE_TO,
+-- RANGE_ATTACK, ...) passes explicit target coordinates; this previously
+-- called RequestOperation with nil params, giving the engine no target when
+-- more than one adjacent city/candidate could be in play. Suspected cause of
+-- "adjacent to city but SPREAD_RELIGION silently refused."
+local function DoSpreadReligion(pUnit, x, y)
+    local params = {}
+    params[UnitOperationTypes.PARAM_X] = x
+    params[UnitOperationTypes.PARAM_Y] = y
+    return TryOperation("SpreadReligion", pUnit, UnitOperationTypes.SPREAD_RELIGION, params)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1682,7 +1693,7 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
     DebugLog(string.format("  spread: %s city @(%s,%s) dist=%s charges=%s",
         target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist), S(charges)))
     if dist <= 1 then
-        local ok = DoSpreadReligion(pUnit)
+        local ok = DoSpreadReligion(pUnit, target.x, target.y)
         Trace(pUnit, "spread", fromX, fromY, ok, "spreadRefused")
         if ok then return true end
         DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> advance instead")

@@ -601,6 +601,9 @@ do
     local op = firstOp(100)
     check("Missionary adjacent to unconverted city -> SPREAD_RELIGION",
         op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
+    check("SPREAD_RELIGION carries the target city's coordinates",
+        op and op.x == 6 and op.y == 5,
+        op and ("x=" .. tostring(op.x) .. " y=" .. tostring(op.y)) or "no op")
 end
 
 -- -------------------------------------------------------------------------
