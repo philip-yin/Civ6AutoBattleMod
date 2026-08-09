@@ -425,14 +425,13 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 17b. Melee unit with a non-adjacent target ("advance" decision) whose ONLY
---      reachable tile is rejected by the engine (e.g. occupied by a friendly
---      stack-mate -- exactly what happens when several units of the same type
---      converge on one enemy: the front units block the back ones' path) now
---      falls back to FORTIFY instead of doing nothing at all. This is the bug
---      a player hit directly: "acted on N units" reported success, but the
---      blocked units showed no move, no attack, no fortify -- because
---      AdvanceTowardTarget's failure was silently discarded.
+-- 17b. Melee unit with a non-adjacent target ("advance" decision) whose
+--      MOVE_TO (to the target's own tile, imitating a manual right-click) is
+--      rejected outright by the engine -- falls back to FORTIFY instead of
+--      doing nothing at all. This is the bug a player hit directly: "acted on
+--      N units" reported success, but the blocked units showed no move, no
+--      attack, no fortify -- because AdvanceTowardTarget's failure was
+--      silently discarded.
 -- -------------------------------------------------------------------------
 do
     M.reset()
@@ -441,9 +440,7 @@ do
     M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=8, y=5, combat=30 } } } -- dist 3: not adjacent
     M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
     -- No combat result registered for 100:200 -- irrelevant here, target is non-adjacent.
-    M.plots[6005] = { x=6, y=5 }         -- the only reachable tile, closer to the enemy
-    M.reachablePlots[100] = { 6005 }
-    M.disallowOps["100:MOVE_TO"] = true  -- simulates that tile being blocked/occupied
+    M.disallowOps["100:MOVE_TO"] = true  -- simulates the engine refusing the move
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
@@ -514,8 +511,11 @@ do
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
+    -- AdvanceTowardTarget now imitates a manual right-click: MOVE_TO goes
+    -- straight to the TARGET's own tile (the engine paths as close as it can),
+    -- not a Lua-computed intermediate tile.
     check("Ranged unit out of range advances toward distant target (no hold)",
-        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and op.op == "MOVE_TO" and op.x == 11 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
 
@@ -613,15 +613,14 @@ do
         units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN" } },
         cities = { { id=300, x=10, y=5, religion="REL_PAGAN" } } }
-    -- Reachable plots: index 6005 = (6,5) closer to the city.
-    M.plots[6005] = { x=6, y=5 }
-    M.reachablePlots[100] = { 6005 }
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
+    -- AdvanceTowardTarget now imitates a manual right-click: MOVE_TO goes
+    -- straight to the city's own tile, not a Lua-computed intermediate tile.
     check("Missionary advances toward distant unconverted city",
-        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and op.op == "MOVE_TO" and op.x == 10 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
 
@@ -639,14 +638,14 @@ do
         units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
                     formationClass="FORMATION_CLASS_CIVILIAN" } },
         cities = { { id=300, x=17, y=5, religion="REL_PAGAN" } } }  -- dist 12, past MAX_ENGAGE_DIST
-    M.plots[6005] = { x=6, y=5 }
-    M.reachablePlots[100] = { 6005 }
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
+    -- AdvanceTowardTarget now imitates a manual right-click: MOVE_TO goes
+    -- straight to the city's own tile, not a Lua-computed intermediate tile.
     check("Missionary advances toward unconverted city beyond MAX_ENGAGE_DIST (12 hexes)",
-        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and op.op == "MOVE_TO" and op.x == 17 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
 
@@ -663,16 +662,15 @@ do
                    { id=301, x=9, y=5, religion="REL_PAGAN" } } }  -- ours, unconverted, dist 4
     M.players[1] = M.makePlayer{ id=1,
         cities = { { id=400, x=7, y=5, religion="REL_PAGAN" } } }  -- foreign, unconverted, dist 2 (closer)
-    M.plots[6005]={x=6,y=5}; M.plots[8005]={x=8,y=5}
-    M.reachablePlots[100] = { 6005, 8005 }
     M.install(); loadLogic()
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
-    -- Should head toward OUR unconverted city (9,5) -> nearest reachable is (8,5),
-    -- NOT toward the closer foreign city (7,5) -> (6,5).
+    -- Should head toward OUR unconverted city (9,5) -- AdvanceTowardTarget now
+    -- MOVE_TOs the city's own tile directly, NOT toward the closer foreign
+    -- city (7,5).
     check("Missionary prefers our unconverted city over closer foreign",
-        op and op.op == "MOVE_TO" and op.x == 8 and op.y == 5,
+        op and op.op == "MOVE_TO" and op.x == 9 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
 
