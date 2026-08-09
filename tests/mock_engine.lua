@@ -136,6 +136,8 @@ local function makeCityCollection(cities)
         local i = 0
         return function() i = i + 1; if cities[i] then return i, cities[i] end end
     end
+    -- Convention: the FIRST city in a player's spec is treated as capital.
+    function c:GetCapitalCity() return cities[1] end
     return c
 end
 

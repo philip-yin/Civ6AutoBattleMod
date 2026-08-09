@@ -213,7 +213,7 @@ local function TraceProblemText(action, opResult, moved, reason, cands)
             return "could not attack, held position instead"
         elseif action == "moveattack" or action == "moveattack-fallback-attack" then
             return "could not reach firing position, held instead"
-        elseif action == "advance" then
+        elseif action == "advance" or action == "attack-stalled-advance" then
             return "could not advance toward enemy (all routes blocked), held position instead" .. candsText
         elseif action == "spread-advance-blocked" then
             return "could not advance toward city (all routes blocked), held position instead" .. candsText
@@ -335,21 +335,32 @@ local function IsEligibleUnit(pUnit)
     -- white/active), so we use it here to un-exclude a "SLEEP" unit that's
     -- actually just an alerted unit sitting idle, without touching truly parked
     -- ones.
+    -- GetFortifyTurns read UP FRONT so the Alert carve-out below can cross-check
+    -- it -- IsReadyToMove()==true alone is not trusted as sufficient proof of
+    -- "not really parked": a unit reported fortified/sleeping getting invoked
+    -- anyway (a real regression seen in-game) means IsReadyToMove() can return
+    -- true for a unit that is, by the fortifyTurns signal, still genuinely
+    -- parked. Requiring BOTH signals to agree before un-excluding is strictly
+    -- more conservative -- it can only ever additionally exclude a unit, never
+    -- wrongly include one, which is the failure direction that matters here.
+    local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
+    local hasFortifyTurns = okF and fort ~= nil and fort > 0
+
     local act, okAct = nil, false
     if UnitManager ~= nil and UnitManager.GetActivityType ~= nil and ActivityTypes ~= nil then
         local ok, a = Try("GetActivityType", function() return UnitManager.GetActivityType(pUnit) end)
         if ok then act = a; okAct = true end
         if ok and a == ActivityTypes.ACTIVITY_SLEEP then
             local okR, ready = Try("IsReadyToMove", function() return pUnit:IsReadyToMove() end)
-            if not (okR and ready == true) then return false, "asleep" end
+            if not (okR and ready == true) or hasFortifyTurns then return false, "asleep" end
             -- IsReadyToMove() says this unit isn't really parked (likely Alert,
-            -- idling with no threat detected, not a durable Sleep/Fortify) --
-            -- fall through to the strength check below instead of excluding it.
+            -- idling with no threat detected, not a durable Sleep/Fortify), AND
+            -- it carries no leftover fortify-turns either -- fall through to the
+            -- strength check below instead of excluding it.
         end
     end
-    local okF, fort = Try("GetFortifyTurns", function() return pUnit:GetFortifyTurns() end)
     local isAwake = okAct and ActivityTypes ~= nil and act == ActivityTypes.ACTIVITY_AWAKE
-    if okF and fort ~= nil and fort > 0 and not isAwake then return false, "fortified" end
+    if hasFortifyTurns and not isAwake then return false, "fortified" end
 
     -- Has offensive capability of some kind?
     local combat = pUnit:GetCombat()
@@ -713,15 +724,46 @@ end
 local GetReachablePlots
 local DoMoveTo
 
--- Our player's founded religion type, or nil if none / unavailable.
+-- The religion we're spreading, or nil if genuinely undetermined. Real bug
+-- found in-game: GetReligionTypeCreated() is "the religion THIS player
+-- personally FOUNDED" (confirmed against the base game's own ReligionScreen.lua,
+-- which tracks religions by Founder) -- NOT "what religion my cities follow."
+-- A player who adopted/inherited a religion someone else founded (very common;
+-- you don't need to found a religion to practice one) gets nil here, which
+-- made CityNeedsConversion's "ourReligion == nil -> treat as needing
+-- conversion" fallback treat EVERY city, including the player's own already-
+-- converted ones, as a permanent target -- the unit kept getting sent to
+-- cities that never actually needed it. Fallback: if we didn't found one,
+-- read the majority religion of our OWN CAPITAL instead -- that's what the
+-- player is actually practicing, regardless of who founded it.
+-- RELIGION_PANTHEON/NONE sentinels are typically -1 in Civ6's numeric religion
+-- enum, meaning "no religion" despite being non-nil -- guard for that WITHOUT
+-- assuming the value is always numeric (test mocks use string IDs), so the
+-- comparison itself never throws on a non-numeric religion type.
+local function IsRealReligion(rtype)
+    if rtype == nil then return false end
+    if type(rtype) == "number" and rtype < 0 then return false end
+    return true
+end
+
 local function OurReligionType(selfPlayerId)
     local pPlayer = Players[selfPlayerId]
     if pPlayer == nil then return nil end
     local ok, rel = Try("GetReligion", function() return pPlayer:GetReligion() end)
-    if not ok or rel == nil then return nil end
-    local ok2, rtype = Try("GetReligionTypeCreated", function() return rel:GetReligionTypeCreated() end)
-    if not ok2 then return nil end
-    return rtype
+    if ok and rel ~= nil then
+        local ok2, rtype = Try("GetReligionTypeCreated", function() return rel:GetReligionTypeCreated() end)
+        if ok2 and IsRealReligion(rtype) then return rtype end
+    end
+
+    local okC, pCities = Try("GetCities", function() return pPlayer:GetCities() end)
+    if not okC or pCities == nil then return nil end
+    local okCap, capital = Try("GetCapitalCity", function() return pCities:GetCapitalCity() end)
+    if not okCap or capital == nil then return nil end
+    local okR, cityRel = Try("capital GetReligion", function() return capital:GetReligion() end)
+    if not okR or cityRel == nil then return nil end
+    local okM, majority = Try("capital GetMajorityReligion", function() return cityRel:GetMajorityReligion() end)
+    if not okM or not IsRealReligion(majority) then return nil end
+    return majority
 end
 
 -- Is this city's majority religion NOT ours (i.e. worth converting)?
@@ -1243,18 +1285,17 @@ function DoMoveTo(pUnit, x, y, noAttack)  -- assigns to the forward-declared loc
     return TryOperation(noAttack and "MoveTo" or "MoveToAttack", pUnit, UnitOperationTypes.MOVE_TO, params)
 end
 
--- Spread religion at a target city (Missionary must be on/adjacent to it; the
--- engine validates via CanStartOperation). PARAM_X/Y identify WHICH city to
--- spread to -- every other targeted operation in this file (MOVE_TO,
--- RANGE_ATTACK, ...) passes explicit target coordinates; this previously
--- called RequestOperation with nil params, giving the engine no target when
--- more than one adjacent city/candidate could be in play. Suspected cause of
--- "adjacent to city but SPREAD_RELIGION silently refused."
-local function DoSpreadReligion(pUnit, x, y)
-    local params = {}
-    params[UnitOperationTypes.PARAM_X] = x
-    params[UnitOperationTypes.PARAM_Y] = y
-    return TryOperation("SpreadReligion", pUnit, UnitOperationTypes.SPREAD_RELIGION, params)
+-- Spread religion at the unit's current plot (Missionary must be on/adjacent
+-- to the target city; the engine validates via CanStartOperation and infers
+-- the city itself -- no explicit target needed). Previously tried adding
+-- PARAM_X/PARAM_Y here (pattern-matching MOVE_TO/RANGE_ATTACK, which DO need
+-- an explicit target) on the unverified theory that SPREAD_RELIGION was being
+-- refused for lack of a target. REVERTED: confirmed against a real, widely-
+-- used community mod (CQUI) that SPREAD_RELIGION is called with NO parameters
+-- at all -- UnitManager.RequestOperation(unit, hash) -- so the coordinate
+-- theory was never the actual cause; passing them was an unverified guess.
+local function DoSpreadReligion(pUnit)
+    return TryOperation("SpreadReligion", pUnit, UnitOperationTypes.SPREAD_RELIGION, nil)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1632,6 +1673,23 @@ local function ExecuteCombat(pUnit, selfPlayerId, mode, fortifyIfNoTarget)
         Trace(pUnit, "attack", fromX, fromY, ok)
         if ok then
             Diag("fired")
+            -- Melee attack (MOVE_TO+ATTACK) is a real move -- the attacker ends
+            -- up next to the defender. If it's still at its starting tile, the
+            -- engine accepted the op but never actually resolved the attack
+            -- (same silent-drop class of bug seen with plain advances). Ranged/
+            -- air never move to attack, so this check doesn't apply to them.
+            if (not IsRanged(pUnit)) and (not IsAir(pUnit))
+               and pUnit:GetX() == fromX and pUnit:GetY() == fromY then
+                DebugLog("  attack accepted but unit didn't move -> advance toward target instead")
+                local advOk, advReason, advCands = AdvanceTowardTarget(pUnit, tgt)
+                Trace(pUnit, "attack-stalled-advance", fromX, fromY, advOk, advReason, advCands)
+                if advOk then
+                    Diag("moved")
+                else
+                    Diag("held")
+                    DoHold(pUnit)
+                end
+            end
         else
             Diag("refused")
             DebugLog("  attack refused -> fortify")
@@ -1727,10 +1785,15 @@ function ExecuteSpread(pUnit, selfPlayerId)  -- assigns to forward-declared loca
     DebugLog(string.format("  spread: %s city @(%s,%s) dist=%s charges=%s",
         target.isOwn and "OWN" or "foreign", S(target.x), S(target.y), S(dist), S(charges)))
     if dist <= 1 then
-        local ok = DoSpreadReligion(pUnit, target.x, target.y)
+        local ok = DoSpreadReligion(pUnit)
         Trace(pUnit, "spread", fromX, fromY, ok, "spreadRefused")
         if ok then return true end
-        DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> advance instead")
+        -- Refused outright: hold rather than also trying AdvanceTowardTarget
+        -- toward a target we're already adjacent to (dist<=1) -- there's no
+        -- closer tile to move to, so that call would just fail again.
+        DebugLog("  spread: CanStartOperation refused SPREAD_RELIGION -> hold")
+        DoHold(pUnit)
+        return true
     end
     local advOk, advReason, advCands = AdvanceTowardTarget(pUnit, target)
     if not advOk then

@@ -601,9 +601,6 @@ do
     local op = firstOp(100)
     check("Missionary adjacent to unconverted city -> SPREAD_RELIGION",
         op and op.op == "SPREAD_RELIGION", op and op.op or "no op")
-    check("SPREAD_RELIGION carries the target city's coordinates",
-        op and op.x == 6 and op.y == 5,
-        op and ("x=" .. tostring(op.x) .. " y=" .. tostring(op.y)) or "no op")
 end
 
 -- -------------------------------------------------------------------------
@@ -624,6 +621,31 @@ do
     runBothPasses()
     local op = firstOp(100)
     check("Missionary advances toward distant unconverted city",
+        op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
+        op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 23b. City-spread targeting is NOT limited by MAX_ENGAGE_DIST (6 hexes) --
+--      unlike combat targets (GatherEnemyTargets), which the mod deliberately
+--      caps to keep units from marching across the whole map alone.
+--      GatherConversionTargets has no such cap: an unconverted city 12 hexes
+--      away must still be targeted and advanced toward.
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.playerReligion[0] = "REL_OURS"
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN" } },
+        cities = { { id=300, x=17, y=5, religion="REL_PAGAN" } } }  -- dist 12, past MAX_ENGAGE_DIST
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("Missionary advances toward unconverted city beyond MAX_ENGAGE_DIST (12 hexes)",
         op and op.op == "MOVE_TO" and op.x == 6 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
@@ -671,6 +693,36 @@ do
     local op = firstOp(100)
     check("Missionary with nothing to convert holds via SLEEP",
         op and op.op == "SLEEP", op and op.op or "no op")
+end
+
+-- -------------------------------------------------------------------------
+-- 25b. Player did NOT found their own religion (M.playerReligion left unset --
+--      GetReligionTypeCreated() returns nil, exactly like a player who adopted
+--      a religion someone else founded). Real bug seen in-game: OurReligionType
+--      returning nil made CityNeedsConversion treat EVERY city as unconverted,
+--      including the player's own already-converted capital, so the unit kept
+--      re-targeting a city that never needed it. Fix: fall back to the
+--      capital's own majority religion. Capital is already converted (REL_OURS)
+--      and should NOT be targeted; a second, genuinely unconverted city should.
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    -- M.playerReligion[0] intentionally left unset.
+    M.players[0] = M.makePlayer{ id=0,
+        units = { { id=100, x=5, y=5, religious=100, spreadCharges=3, unitType="UNIT_MISSIONARY",
+                    formationClass="FORMATION_CLASS_CIVILIAN" } },
+        cities = {
+            { id=300, x=5, y=5, religion="REL_OURS" },        -- capital, already ours
+            { id=301, x=9, y=5, religion="REL_PAGAN" },        -- genuinely needs conversion
+        } }
+    M.plots[6005] = { x=6, y=5 }
+    M.reachablePlots[100] = { 6005 }
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    runBothPasses()
+    local op = firstOp(100)
+    check("No founded religion: falls back to capital's religion, targets the OTHER unconverted city",
+        op and op.op == "MOVE_TO" and op.x ~= 5, op and (op.op .. " x=" .. tostring(op.x)) or "no op")
 end
 
 -- Helper: build an Apostle scenario. Our apostle vs optional enemy religious
@@ -856,6 +908,29 @@ do
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     AutoBattle_RunMelee()
     check("Genuinely Sleep'd unit (greyed out) is still excluded (no ops)",
+        #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
+end
+
+-- -------------------------------------------------------------------------
+-- 31f2. Unit reports SLEEP activity + IsReadyToMove()=true (the Alert signal)
+--      BUT still carries a nonzero fortifyTurns -- i.e. IsReadyToMove() alone
+--      says "not really parked" while fortifyTurns disagrees. This is the
+--      regression seen in-game: a fortified/sleeping unit getting invoked by
+--      Run Melee/Ranged anyway. Both signals must agree before un-excluding;
+--      when they conflict, stay excluded (never wrongly include a unit).
+-- -------------------------------------------------------------------------
+do
+    M.reset(); M.localPlayerId = 0
+    M.players[0] = M.makePlayer{ id=0, units={
+        { id=100, x=5, y=5, combat=50, activityType="ACTIVITY_SLEEP",
+          isReadyToMove=true, fortifyTurns=2 } } }
+    M.players[1] = M.makePlayer{ id=1, units={ { id=200, x=6, y=5, combat=30 } } }
+    M.warMatrix["0:1"]=true; M.warMatrix["1:0"]=true
+    M.combatResults["100:200"] = M.makeCombatResult(0,0,40,10)
+    M.install(); loadLogic()
+    AutoBattle_SetConfig(MODE_AGGRESSIVE)
+    AutoBattle_RunMelee()
+    check("SLEEP+ready-to-move unit with stale fortifyTurns is still excluded (no ops)",
         #opsFor(100) == 0, tostring(#opsFor(100)) .. " ops")
 end
 
