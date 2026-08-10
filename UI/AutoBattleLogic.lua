@@ -759,7 +759,11 @@ local function CityNeedsConversion(pCity, ourReligion)
     return majority ~= ourReligion
 end
 
--- Gather visible cities that need our religion, tagged own/foreign for priority.
+-- Gather visible cities that need our religion (their DOMINANT/majority
+-- religion isn't ours, per CityNeedsConversion -- a city with SOME of our
+-- followers but a different majority still counts). isOwn is tagged for
+-- logging only; ChooseConversionTarget no longer gives our own cities any
+-- targeting priority -- just the closest unconverted city globally.
 -- Returns list of { obj, x, y, dist, isOwn }.
 local function GatherConversionTargets(pUnit, selfPlayerId)
     local targets = {}
@@ -788,20 +792,14 @@ local function GatherConversionTargets(pUnit, selfPlayerId)
     return targets
 end
 
--- Pick the best conversion target: OUR unconverted cities first (nearest), then
--- foreign/neutral (nearest). Returns the target or nil.
+-- Pick the best conversion target: the CLOSEST unconverted city globally, no
+-- priority for our own civilization's cities. Returns the target or nil.
 local function ChooseConversionTarget(convTargets)
-    local bestOwn, bestOwnDist = nil, math.huge
-    local bestOther, bestOtherDist = nil, math.huge
+    local best, bestDist = nil, math.huge
     for _, t in ipairs(convTargets) do
-        if t.isOwn then
-            if t.dist < bestOwnDist then bestOwnDist = t.dist; bestOwn = t end
-        else
-            if t.dist < bestOtherDist then bestOtherDist = t.dist; bestOther = t end
-        end
+        if t.dist < bestDist then bestDist = t.dist; best = t end
     end
-    if bestOwn ~= nil then return bestOwn end
-    return bestOther
+    return best
 end
 
 -- ---------------------------------------------------------------------------

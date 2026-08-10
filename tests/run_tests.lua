@@ -650,7 +650,9 @@ do
 end
 
 -- -------------------------------------------------------------------------
--- 24. Missionary prioritizes OUR city over a closer foreign one
+-- 24. Missionary targets the CLOSEST unconverted city globally -- no
+--     priority for our own civilization's cities (explicitly requested: pick
+--     the nearest unconverted city period, ours or foreign).
 -- -------------------------------------------------------------------------
 do
     M.reset(); M.localPlayerId = 0
@@ -666,11 +668,8 @@ do
     AutoBattle_SetConfig(MODE_AGGRESSIVE)
     runBothPasses()
     local op = firstOp(100)
-    -- Should head toward OUR unconverted city (9,5) -- AdvanceTowardTarget now
-    -- MOVE_TOs the city's own tile directly, NOT toward the closer foreign
-    -- city (7,5).
-    check("Missionary prefers our unconverted city over closer foreign",
-        op and op.op == "MOVE_TO" and op.x == 9 and op.y == 5,
+    check("Missionary targets closest unconverted city globally (foreign, closer)",
+        op and op.op == "MOVE_TO" and op.x == 7 and op.y == 5,
         op and (op.op .. " @" .. tostring(op.x) .. "," .. tostring(op.y)) or "no op")
 end
 
